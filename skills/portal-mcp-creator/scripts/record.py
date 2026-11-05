@@ -67,6 +67,25 @@ from portal_mcp.login.local import (  # noqa: E402
 from portal_mcp.manifest import Manifest, load_manifest_file  # noqa: E402
 
 MAX_CAPTURED_BODY = 64 * 1024
+# Header names that carry credentials. Only their names are ever reported, never values.
+AUTH_HEADER_NAMES = ("x-api-key", "api-key", "apikey", "x-auth-token", "x-access-token", "x-xsrf-token",
+                     "x-csrf-token", "ocp-apim-subscription-key", "x-functions-key", "x-session-token")
+
+
+def observe_auth(stats: dict, headers: dict[str, str]) -> None:
+    """Count how requests to a data host authenticate: names and schemes only, never values."""
+    stats["requests"] = stats.get("requests", 0) + 1
+    authorization = headers.get("authorization")
+    if authorization:
+        scheme = authorization.split(" ", 1)[0][:20]
+        schemes = stats.setdefault("authorization_schemes", {})
+        schemes[scheme] = schemes.get(scheme, 0) + 1
+    if headers.get("cookie"):
+        stats["with_cookies"] = stats.get("with_cookies", 0) + 1
+    names = sorted({name for name in headers if name.lower() in AUTH_HEADER_NAMES})
+    if names:
+        known = set(stats.get("auth_headers", []))
+        stats["auth_headers"] = sorted(known | set(names))
 MAX_BLOCKED_OTHER = 200
 
 
@@ -115,6 +134,8 @@ async def record(
     captured_path = out_dir / "captured_writes.json"
     service_host = (urlsplit(manifest.base_url).hostname or "").lower()
     login_hosts = tuple(manifest.login_hosts)
+    data_hosts = tuple(manifest.data_hosts)
+    data_host_auth: dict[str, dict] = {}
     headless = os.environ.get("PORTAL_MCP_HEADLESS") == "1"
 
     profile_dir, temporary_profile = profile_for_run(paths, manifest, profile, out_dir, reuse_profile)
@@ -131,6 +152,8 @@ async def record(
         "service": manifest.name,
         "profile": {"clean": temporary_profile, "reused": not temporary_profile},
         "login_hosts": list(login_hosts),
+        "data_hosts": list(data_hosts),
+        "data_host_auth": data_host_auth,
         "session_check": None,
         "login_verified": False,
         "menu_links": None,
@@ -182,23 +205,27 @@ async def record(
                 async def route_handler(route, request):
                     decision = decide(
                         request.method, request.url, service_host, state["logged_in"],
-                        allow_writes=allow_real_writes, login_hosts=login_hosts,
+                        allow_writes=allow_real_writes, login_hosts=login_hosts, data_hosts=data_hosts,
                     )
-                    if decision.allowed:
-                        await route.continue_()
-                        return
                     parts = urlsplit(request.url)
                     host = (parts.hostname or "").lower()
+                    if decision.allowed:
+                        if host in data_hosts and state["logged_in"]:
+                            observe_auth(data_host_auth.setdefault(host, {}), await request.all_headers())
+                        await route.continue_()
+                        return
                     if host and host != service_host and is_tracking_host(host):
                         blocked_tracking[host] = blocked_tracking.get(host, 0) + 1
                     elif len(blocked_other) < MAX_BLOCKED_OTHER:
                         blocked_other.append({"method": request.method, "host": host, "path": parts.path,
                                               "reason": decision.reason})
-                    if request.is_navigation_request() and host != service_host and host not in login_hosts:
+                    if (request.is_navigation_request() and host != service_host
+                            and host not in login_hosts and host not in data_hosts):
                         undeclared_hosts[host] = undeclared_hosts.get(host, 0) + 1
-                    if should_capture(request.method, request.url, service_host, state["logged_in"]):
+                    if should_capture(request.method, request.url, service_host, state["logged_in"], data_hosts):
                         body = request.post_data or ""
                         captured.append({
+                            "host": host,
                             "method": request.method.upper(),
                             "path": parts.path,
                             "query": parts.query,

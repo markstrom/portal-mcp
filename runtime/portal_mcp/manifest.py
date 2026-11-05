@@ -19,6 +19,21 @@ NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 HOST_RE = re.compile(r"^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$")
 
 
+def _validate_hosts(value: list[str], label: str) -> list[str]:
+    seen: set[str] = set()
+    for host in value:
+        if not isinstance(host, str) or host != host.lower():
+            raise ValueError(f"{label} {host!r} must be lowercase")
+        if not HOST_RE.match(host):
+            raise ValueError(f"{label} {host!r} must be a plain host name, without scheme, path or port")
+        if host == "localhost" or host.endswith(".localhost") or _is_ip(host):
+            raise ValueError(f"{label} {host!r} must be a public host name, not localhost or an IP address")
+        if host in seen:
+            raise ValueError(f"{label} {host!r} is listed twice")
+        seen.add(host)
+    return value
+
+
 def _is_ip(host: str) -> bool:
     try:
         ipaddress.ip_address(host)
@@ -112,6 +127,8 @@ class ToolConfig(BaseModel):
     def _valid_path(cls, value: str) -> str:
         if not value.startswith("/"):
             raise ValueError("tool path must start with '/'")
+        if value.startswith("//") or "://" in value:
+            raise ValueError("tool path must stay on the base_url host")
         return value
 
     @model_validator(mode="after")
@@ -145,22 +162,20 @@ class Manifest(BaseModel):
     # Other hosts the login goes through (identity provider, BankID gateway, account service).
     # Approved by the user. Allowed during login only, over https, never sent the session.
     login_hosts: list[str] = Field(default_factory=list)
+    # Other hosts the service's pages load data from (an API on another host). Approved by the
+    # user. In recordings: GET over https; writes to them are captured, not sent. They never
+    # get the session. Runtime tools that call them are not supported yet.
+    data_hosts: list[str] = Field(default_factory=list)
 
     @field_validator("login_hosts")
     @classmethod
     def _valid_login_hosts(cls, value: list[str]) -> list[str]:
-        seen: set[str] = set()
-        for host in value:
-            if not isinstance(host, str) or host != host.lower():
-                raise ValueError(f"login host {host!r} must be lowercase")
-            if not HOST_RE.match(host):
-                raise ValueError(f"login host {host!r} must be a plain host name, without scheme, path or port")
-            if host == "localhost" or host.endswith(".localhost") or _is_ip(host):
-                raise ValueError(f"login host {host!r} must be a public host name, not localhost or an IP address")
-            if host in seen:
-                raise ValueError(f"login host {host!r} is listed twice")
-            seen.add(host)
-        return value
+        return _validate_hosts(value, "login host")
+
+    @field_validator("data_hosts")
+    @classmethod
+    def _valid_data_hosts(cls, value: list[str]) -> list[str]:
+        return _validate_hosts(value, "data host")
 
     @field_validator("name")
     @classmethod
@@ -188,10 +203,15 @@ class Manifest(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _login_hosts_differ_from_service(self) -> Manifest:
+    def _hosts_differ_from_service(self) -> Manifest:
         service_host = (urlsplit(self.base_url).hostname or "").lower()
         if service_host in self.login_hosts:
             raise ValueError("login_hosts must not contain the base_url host; it is allowed already")
+        if service_host in self.data_hosts:
+            raise ValueError("data_hosts must not contain the base_url host; it is allowed already")
+        both = sorted(set(self.login_hosts) & set(self.data_hosts))
+        if both:
+            raise ValueError(f"a host cannot be both a login host and a data host: {both}")
         return self
 
 

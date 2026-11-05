@@ -5,6 +5,10 @@ Rules:
   (identity providers, BankID gateways, account services) while the user logs in.
 - A login host is allowed only before login and only over https. After login, every
   request to it is blocked. A login host never counts as the service's host.
+- A data host (an API the service's pages load data from) is allowed for GET over https.
+  After login, non-GET requests to it are blocked and captured like the service's own,
+  unless the user explicitly agreed to a real action.
+- Any other host is blocked as "not declared".
 - Before login: everything on the host is allowed, so the login can complete.
 - After login: every non-GET request is blocked (captured, not sent), unless the user
   explicitly agreed to a real action for this recording.
@@ -60,14 +64,23 @@ def decide(
     logged_in: bool,
     allow_writes: bool = False,
     login_hosts: tuple[str, ...] | list[str] = (),
+    data_hosts: tuple[str, ...] | list[str] = (),
 ) -> Decision:
     """allow_writes lets non-GET requests through. Use it only after the user agreed to a real action.
 
-    login_hosts are the hosts declared in the manifest's `login_hosts`.
+    login_hosts and data_hosts are the hosts declared in the manifest.
     """
     parts = urlsplit(url)
     host = (parts.hostname or "").lower()
     if host != service_host.lower():
+        if host and host in {h.lower() for h in data_hosts}:
+            if parts.scheme != "https":
+                return Decision(False, f"data host {host} needs https")
+            if method.upper() == "GET":
+                return Decision(True, f"data host {host}: GET")
+            if logged_in and allow_writes:
+                return Decision(True, f"{method.upper()} to data host {host} allowed: the user agreed to a real action")
+            return Decision(False, f"{method.upper()} to data host {host} is blocked" + (" (captured)" if logged_in else ""))
         if host and host in {h.lower() for h in login_hosts}:
             if logged_in:
                 return Decision(False, f"login host {host} is blocked after login")
@@ -76,7 +89,10 @@ def decide(
             # Login pages post their own forms and BankID flows poll with POST, so all methods
             # are allowed here before login, as on the service's own host before login.
             return Decision(True, f"login host {host} during login")
-        return Decision(False, f"outside the service domain ({host or 'no host'})")
+        return Decision(
+            False,
+            f"host {host or '(none)'} is not declared: not the service's host, and not in login_hosts or data_hosts",
+        )
     if not logged_in:
         return Decision(True, "before login")
     method = method.upper()
@@ -90,8 +106,11 @@ def decide(
     return Decision(True, "GET after login")
 
 
-def should_capture(method: str, url: str, service_host: str, logged_in: bool) -> bool:
+def should_capture(
+    method: str, url: str, service_host: str, logged_in: bool, data_hosts: tuple[str, ...] | list[str] = ()
+) -> bool:
     """A blocked request is captured as a write only after login, only for non-GET, and only
-    for the service's own host. Login hosts and other hosts are never captured."""
+    for the service's own host or a declared data host. Login hosts and others never are."""
     host = (urlsplit(url).hostname or "").lower()
-    return logged_in and method.upper() != "GET" and host == service_host.lower()
+    allowed = {service_host.lower(), *(h.lower() for h in data_hosts)}
+    return logged_in and method.upper() != "GET" and host in allowed

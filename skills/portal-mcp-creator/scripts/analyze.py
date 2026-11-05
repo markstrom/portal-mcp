@@ -57,15 +57,18 @@ def sensitive_fields(schema, prefix: str = "") -> list[str]:
     return found
 
 
-def analyze(har: dict, host: str) -> dict:
-    groups: dict[str, dict] = {}
+def analyze(har: dict, host: str, data_hosts: tuple[str, ...] | list[str] = ()) -> dict:
+    """Read candidates for the service's host, plus declared data hosts (marked with their host)."""
+    hosts = {host.lower(), *(h.lower() for h in data_hosts)}
+    groups: dict[tuple[str, str], dict] = {}
     skipped = defaultdict(int)
     for entry in har.get("log", {}).get("entries", []):
         request = entry.get("request", {})
         response = entry.get("response", {})
         url = request.get("url", "")
         parts = urlsplit(url)
-        if (parts.hostname or "").lower() != host.lower():
+        entry_host = (parts.hostname or "").lower()
+        if entry_host not in hosts:
             skipped["other host"] += 1
             continue
         if request.get("method", "").upper() != "GET":
@@ -82,7 +85,8 @@ def analyze(har: dict, host: str) -> dict:
             continue
 
         template = path_template(parts.path)
-        group = groups.setdefault(template, {
+        group = groups.setdefault((entry_host, template), {
+            "host": entry_host,
             "method": "GET",
             "path": template,
             "raw_paths": set(),
@@ -116,13 +120,15 @@ def analyze(har: dict, host: str) -> dict:
             skipped[f"not JSON or PDF ({mime or 'no type'})"] += 1
 
     tools = []
-    for template, group in sorted(groups.items()):
+    for (entry_host, template), group in sorted(groups.items(), key=lambda kv: (kv[0][0] != host.lower(), kv[0])):
         if group["response_kind"] is None:
             continue
         schema = group["schema"]
         kind = "file" if group["response_kind"] == "file" else "read"
         tools.append({
             "suggested_name": suggest_name(template),
+            "host": entry_host,
+            "data_host": entry_host != host.lower(),
             "kind": kind,
             "method": "GET",
             "path": template,
@@ -180,12 +186,14 @@ def _form_type(value) -> str:
 def analyze_writes(captured: list[dict], host: str, show_values_for: set[str] | None = None) -> list[dict]:
     """Candidate write tools from captured, aborted requests. Values are hidden by default."""
     show_values_for = show_values_for or set()
-    groups: dict[tuple[str, str], dict] = {}
+    groups: dict[tuple[str, str, str], dict] = {}
     for item in captured:
         method = item.get("method", "POST").upper()
+        item_host = (item.get("host") or host).lower()
         template = path_template(item.get("path", "/"))
         encoding, fields = _body_fields(item.get("content_type", ""), item.get("body", ""))
-        group = groups.setdefault((method, template), {
+        group = groups.setdefault((item_host, method, template), {
+            "host": item_host,
             "method": method,
             "path": template,
             "encoding": encoding,
@@ -205,7 +213,7 @@ def analyze_writes(captured: list[dict], host: str, show_values_for: set[str] | 
                 group["values"].setdefault(name, value)
 
     out = []
-    for (method, template), group in sorted(groups.items()):
+    for (item_host, method, template), group in sorted(groups.items()):
         names = list(group["fields"])
         always = set.intersection(*group["seen_in"]) if group["seen_in"] else set()
         lowered = [n.lower() for n in names] + [w for w in re.split(r"[^a-z]+", template.lower()) if w]
@@ -214,6 +222,8 @@ def analyze_writes(captured: list[dict], host: str, show_values_for: set[str] | 
         tokens = sorted(n for n in names if any(w in n.lower() for w in TOKEN_WORDS))
         out.append({
             "suggested_name": suggest_name(template),
+            "host": item_host,
+            "data_host": item_host != host.lower(),
             "suggested_kind": "binding" if binding else "write",
             "method": method,
             "path": template,
@@ -242,6 +252,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("har", type=Path)
     parser.add_argument("--host", required=True, help="the service host, for example app.example.com")
     parser.add_argument("--writes", type=Path, help="captured_writes.json from record.py")
+    parser.add_argument("--data-host", action="append", default=[],
+                        help="a declared data host whose reads to include (repeatable)")
     parser.add_argument("--keep-har", action="store_true",
                         help="keep the HAR file; by default it is deleted once the catalog is written")
     parser.add_argument(
@@ -251,7 +263,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
     har = json.loads(args.har.read_text(encoding="utf-8"))
-    catalog = analyze(har, args.host)
+    catalog = analyze(har, args.host, args.data_host)
     if args.writes:
         captured = json.loads(args.writes.read_text(encoding="utf-8"))
         shown = {n.strip() for n in args.show_values_for.split(",") if n.strip()}

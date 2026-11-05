@@ -170,6 +170,7 @@ session:
   check: /api/session         # 200 = logged in, 401 = not logged in
   logout: /api/logout         # optional, called with POST
 login_hosts: [login.example.com]  # optional: other hosts the login goes through
+data_hosts: [api.example.net]     # optional: APIs on other hosts the pages load data from
 rate_limit_per_minute: 30
 cache_seconds: 30             # caches read results
 redact: [items.owner.national_id]
@@ -254,6 +255,8 @@ The runtime shows a desktop notification when a login is waiting, when a login i
 ### Logging in
 
 When the creator skill records a service, every recording starts with a clean, temporary browser profile, checks that the login is really verified (only a 200 from `session.check` counts, and a check that answers 200 without a login is refused), and only then lists the service's menu links for you to choose from. If a service rejects a request because its headers are too large (usually too many cookies), the plugin says so, shows the cookies for the service's host by name and count only, and suggests a clean profile; `forget_session` with `browser_profile: true` deletes the runtime's browser profile.
+
+Some services load their data from an API on another host. List such hosts in `data_hosts`. When recording, a data host is allowed for GET over https, and writes to it are captured, not sent, just like the service's own host. It never gets the saved session. Runtime tools that call a data host are not supported yet; the recording shows how the data host authenticates (header names and schemes only), as groundwork for that.
 
 Many services log in through another host, for example an identity provider or an account service on its own address. List such hosts in `login_hosts`, as plain host names. When the creator skill records a service, a login host is allowed only while you log in, only over https, and is blocked after login. The saved session only ever holds cookies for the `base_url` host. Hosts are never added automatically: if a recording is stopped by an unknown host, the skill asks you whether you trust it.
 
