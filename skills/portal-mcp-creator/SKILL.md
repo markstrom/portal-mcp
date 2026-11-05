@@ -63,6 +63,8 @@ When the run ends, it prints a JSON summary:
 
 Pages you already know can be passed directly with `--visit /path` (repeatable); they are visited after the login is verified.
 
+**Trying a better session check.** When `session.check` redirects, look in an earlier recording or catalog for a JSON endpoint that the logged-in pages load (a list or the user's own data, GET, no side effect). Pass it with `--check-candidate /path` (repeatable). The run calls each candidate without cookies before the browser opens, and again with a copy of the cookies after the login is verified, and reports `check_candidates` with both answers. Use a candidate as `session.check` only if it says `usable: true` (401 or 403 without a redirect when logged out, 200 when logged in). If none is usable, suggest another endpoint from the recording or ask the user for one. Never guess, and never call the candidates yourself outside the recording. Change only `session.check` in the manifest, after the user approves.
+
 ### 5. Exploration
 Repeat step 4 for more read functions. Pagination: visit a second page of a list if there is one, so the analysis sees `page` or `offset` parameters.
 

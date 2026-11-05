@@ -56,7 +56,11 @@ from portal_mcp.login.local import (  # noqa: E402
     _capture,
     _first_page,
     _launch,
+    _user_agent,
+    candidate_verdict,
+    check_status,
     login_not_verified_message,
+    manifest_with_check,
     preflight_check,
 )
 from portal_mcp.manifest import Manifest, load_manifest_file  # noqa: E402
@@ -97,6 +101,7 @@ async def record(
     discover: bool = False,
     choice_timeout: float = 900,
     poll_seconds: float = 2.0,
+    check_candidates: list[str] | tuple[str, ...] = (),
 ) -> dict:
     from playwright.async_api import async_playwright
 
@@ -132,6 +137,7 @@ async def record(
         "blocked_other": blocked_other,
         "blocked_navigation_hosts": undeclared_hosts,
         "header_too_large": None,
+        "check_candidates": [],
         "captured_writes": 0,
         "real_writes_allowed": allow_real_writes,
         "error": None,
@@ -145,6 +151,17 @@ async def record(
         summary["error"] = preflight.explain(manifest)
         status(summary["error"])
         return summary
+
+    # Candidate session checks: their logged-out answer, before the browser opens.
+    candidates: list[dict] = []
+    for candidate in check_candidates:
+        path = valid_visit(candidate, service_host)
+        if path is None:
+            candidates.append({"path": str(candidate)[:200], "refused": "must be a relative path that is not a side effect"})
+            continue
+        result = await preflight_check(manifest_with_check(manifest, path))
+        candidates.append({"path": path, "logged_out": result, "logged_in": None})
+        status(f"Candidate session check {path}: {result.status or result.error} when logged out.")
     if preflight.verdict == "redirects":
         status("Warning: " + preflight.explain(manifest))
     status(f"Using a {'clean, temporary' if temporary_profile else 'reused'} browser profile.")
@@ -226,7 +243,21 @@ async def record(
                     await asyncio.sleep(poll_seconds)
                 state["logged_in"] = True
                 summary["login_verified"] = True
+                summary["session_check"]["logged_in_answer"] = 200
                 status("Login verified.")
+
+                # Candidate session checks: their logged-in answer, with a copy of the cookies.
+                if candidates:
+                    cookies = await context.cookies([manifest.base_url])
+                    agent = await _user_agent(page)
+                    for entry in candidates:
+                        if "refused" in entry:
+                            continue
+                        entry["logged_in"] = await check_status(
+                            manifest_with_check(manifest, entry["path"]), cookies, user_agent=agent
+                        )
+                        status(f"Candidate session check {entry['path']}: "
+                               f"{entry['logged_in'].status or entry['logged_in'].error} when logged in.")
 
                 # 4. Menu links, only now.
                 chosen: list[str] = []
@@ -299,11 +330,36 @@ async def record(
         if temporary_profile:
             shutil.rmtree(profile_dir, ignore_errors=True)
 
+    summary["check_candidates"] = [_candidate_report(entry) for entry in candidates]
     _write_private(captured_path, captured)
     summary["captured_writes"] = len(captured)
     summary["har"] = str(har_path) if har_path.exists() else None
     summary["captured_file"] = str(captured_path)
     return summary
+
+
+def _answer(result) -> dict | None:
+    if result is None:
+        return None
+    return {
+        "status": result.status,
+        "redirect_host": result.location_host,
+        "content_type": (result.content_type or "").split(";")[0] or None,
+        "error": result.error,
+    }
+
+
+def _candidate_report(entry: dict) -> dict:
+    if "refused" in entry:
+        return {"path": entry["path"], "usable": False, "reason": entry["refused"]}
+    usable, reason = candidate_verdict(entry["logged_out"], entry["logged_in"])
+    return {
+        "path": entry["path"],
+        "logged_out": _answer(entry["logged_out"]),
+        "logged_in": _answer(entry["logged_in"]),
+        "usable": usable,
+        "reason": reason,
+    }
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -317,6 +373,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--discover", action="store_true",
                         help="after a verified login, list menu links and wait for visit.json")
     parser.add_argument("--choice-timeout", type=float, default=900)
+    parser.add_argument("--check-candidate", action="append", default=[],
+                        help="an endpoint to try as session.check, logged out and logged in (repeatable)")
     parser.add_argument("--reuse-profile", action="store_true",
                         help="use the persistent browser profile instead of a clean one (only if the user chose it)")
     parser.add_argument("--interactive", action="store_true", help="keep the window open until the user closes it")
@@ -339,6 +397,7 @@ def main(argv: list[str] | None = None) -> None:
         reuse_profile=args.reuse_profile,
         discover=args.discover,
         choice_timeout=args.choice_timeout,
+        check_candidates=args.check_candidate,
     ))
     json.dump(summary, sys.stdout, indent=2, ensure_ascii=False)
     sys.stdout.write("\n")

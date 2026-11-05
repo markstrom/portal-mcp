@@ -260,3 +260,54 @@ def test_login_not_verified_message_counts_answers():
     observation.record(CheckResult(status=401))
     text = login_not_verified_message(_manifest(), observation, 10)
     assert "401 x2" in text
+
+
+# ----- check candidates (issue: verify candidate session checks) -------------
+
+from portal_mcp.login.local import CheckResult, candidate_verdict, manifest_with_check  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "out,inside,usable,reason",
+    [
+        (CheckResult(401), CheckResult(200), True, "answers 401 when logged out and 200 when logged in"),
+        (CheckResult(403), CheckResult(200), True, "answers 403"),
+        (CheckResult(302, location="https://login.example.com/x"), CheckResult(200), False, "redirects to login.example.com"),
+        (CheckResult(200), CheckResult(200), False, "200 even when logged out"),
+        (CheckResult(404), CheckResult(200), False, "404 when logged out"),
+        (CheckResult(401), CheckResult(500), False, "500 when logged in"),
+        (CheckResult(401), None, False, "not tried logged in"),
+        (CheckResult(None, error="ConnectError"), None, False, "ConnectError"),
+    ],
+)
+def test_candidate_verdict(out, inside, usable, reason):
+    ok, why = candidate_verdict(out, inside)
+    assert ok is usable and reason in why
+
+
+def test_manifest_with_check_leaves_the_original_alone():
+    original = _manifest("/home/")
+    changed = manifest_with_check(original, "/api/me")
+    assert changed.session.check == "/api/me"
+    assert original.session.check == "/home/"
+    assert changed.login_hosts == original.login_hosts
+
+
+@pytest.mark.parametrize("base", ["https://app.example.com", "https://portal.example.org", "http://127.0.0.1:9"])
+async def test_a_redirect_never_counts_as_logged_in_for_any_service(base):
+    manifest = Manifest.model_validate(yaml.safe_load(f"""
+name: anyservice
+base_url: {base}
+login_url: {base}/login
+session: {{check: /start}}
+"""))
+
+    class Ctx:
+        async def cookies(self, urls):
+            return [{"name": "sid", "value": "v", "domain": "x", "path": "/"}]
+
+    from portal_mcp.login.local import _capture
+
+    for status in (301, 302, 303, 307, 308):
+        assert await _capture(Ctx(), None, manifest, transport=_transport(status, location=f"{base}/login")) is None
+    assert await _capture(Ctx(), None, manifest, transport=_transport(200)) is not None

@@ -155,3 +155,36 @@ async def test_discover_lists_menu_links_after_login_and_waits_for_the_choice(tm
     visited = {v["path"]: v["status"] for v in summary["visited"]}
     assert "/invoices-page" in visited
     assert visited["/api/logout"] == "refused"  # a side-effect choice is never visited
+
+
+async def test_check_candidates_are_tried_logged_out_and_logged_in(tmp_path, mock_base_url, monkeypatch):
+    import record
+
+    from portal_mcp.manifest import load_manifest_file
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("PORTAL_MCP_HOME", str(home))
+    monkeypatch.setenv("PORTAL_MCP_HEADLESS", "1")
+    manifest_path = write_manifest(home / "services", "mockportal", mock_manifest_yaml(mock_base_url))
+    await _seed_login(home / "profiles" / "mockportal" / "default", mock_base_url)
+
+    summary = await record.record(
+        load_manifest_file(manifest_path), [], tmp_path / "rec", timeout=30, profile="default",
+        reuse_profile=True,
+        check_candidates=["/api/invoices", "/account", "/api/logout", "https://other.example.org/x"],
+    )
+    assert summary["login_verified"] is True
+    assert summary["session_check"]["logged_in_answer"] == 200
+    report = {c["path"]: c for c in summary["check_candidates"]}
+
+    invoices = report["/api/invoices"]
+    assert invoices["usable"] is True
+    assert invoices["logged_out"]["status"] == 401 and invoices["logged_in"]["status"] == 200
+    assert invoices["logged_in"]["content_type"] == "application/json"
+
+    account = report["/account"]
+    assert account["usable"] is False and "redirects" in account["reason"]
+    assert account["logged_out"]["status"] == 302 and account["logged_in"]["status"] == 200
+
+    assert report["/api/logout"]["usable"] is False and "side effect" in report["/api/logout"]["reason"]
+    assert report["https://other.example.org/x"]["usable"] is False

@@ -219,6 +219,7 @@ class CheckResult:
     location: str | None = None
     header_too_large: bool = False
     error: str | None = None
+    content_type: str | None = None
 
     @property
     def location_host(self) -> str | None:
@@ -286,7 +287,34 @@ async def check_status(
         status=response.status_code,
         location=response.headers.get("location"),
         header_too_large=too_large,
+        content_type=response.headers.get("content-type"),
     )
+
+
+def manifest_with_check(manifest: Manifest, check: str) -> Manifest:
+    """A copy of the manifest with another session.check (for trying a candidate)."""
+    session = manifest.session.model_copy(update={"check": check})
+    return manifest.model_copy(update={"session": session})
+
+
+def candidate_verdict(logged_out: CheckResult, logged_in: CheckResult | None) -> tuple[bool, str]:
+    """Is this endpoint a reliable session.check? (usable, reason)
+
+    Usable only if it answers 401 or 403 without a redirect when logged out, and 200 when
+    logged in. Everything else is not usable, and the reason says why.
+    """
+    if logged_out.status is not None and 300 <= logged_out.status < 400:
+        where = f" to {logged_out.location_host}" if logged_out.location_host else ""
+        return False, f"redirects{where} when logged out"
+    if logged_out.status == 200:
+        return False, "answers 200 even when logged out"
+    if logged_out.status not in (401, 403):
+        return False, f"answers {logged_out.status or logged_out.error} when logged out, not 401 or 403"
+    if logged_in is None:
+        return False, "not tried logged in (the login was not verified)"
+    if logged_in.status != 200:
+        return False, f"answers {logged_in.status or logged_in.error} when logged in, not 200"
+    return True, f"answers {logged_out.status} when logged out and 200 when logged in"
 
 
 async def preflight_check(manifest: Manifest, transport: httpx.AsyncBaseTransport | None = None) -> CheckResult:
