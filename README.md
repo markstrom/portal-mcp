@@ -171,6 +171,8 @@ session:
   logout: /api/logout         # optional, called with POST
 login_hosts: [login.example.com]  # optional: other hosts the login goes through
 data_hosts: [api.example.net]     # optional: APIs on other hosts the pages load data from
+asset_hosts: [cdn.example.net]    # optional: CDNs for scripts, styles, fonts and images
+login_hosts_after_login: blocked  # or oidc: login host open after login for OIDC endpoints only
 rate_limit_per_minute: 30
 cache_seconds: 30             # caches read results
 redact: [items.owner.national_id]
@@ -255,6 +257,8 @@ The runtime shows a desktop notification when a login is waiting, when a login i
 ### Logging in
 
 When the creator skill records a service, every recording starts with a clean, temporary browser profile, checks that the login is really verified (only a 200 from `session.check` counts, and a check that answers 200 without a login is refused), and only then lists the service's menu links for you to choose from. If a service rejects a request because its headers are too large (usually too many cookies), the plugin says so, shows the cookies for the service's host by name and count only, and suggests a clean profile; `forget_session` with `browser_profile: true` deletes the runtime's browser profile.
+
+Some pages are single-page apps that run their own OpenID Connect client after the login: they load a library from a CDN and get their own token from the login host. Declare the CDN in `asset_hosts` (static files only: scripts, styles, fonts, images) and set `login_hosts_after_login: oidc` to keep the login host open after login for the endpoints its discovery document names (POST only to the token endpoint, never the logout endpoint). Both are off by default. The analyzer refuses recordings whose login was not verified, unless `--allow-unverified` is given.
 
 Some services load their data from an API on another host. List such hosts in `data_hosts`. When recording, a data host is allowed for GET over https, and writes to it are captured, not sent, just like the service's own host. It never gets the saved session. Runtime tools that call a data host are not supported yet; the recording shows how the data host authenticates (header names and schemes only), as groundwork for that.
 

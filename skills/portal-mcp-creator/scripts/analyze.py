@@ -327,6 +327,17 @@ def analyze_hosts(
             "failed_hosts": [r["host"] for r in hosts if r["status"] == "failed"]}
 
 
+def _login_state(har_path: Path) -> bool | None:
+    """True or False from the recorder's recording.json next to the HAR; None if it is missing."""
+    marker = har_path.parent / "recording.json"
+    if not marker.exists():
+        return None
+    try:
+        return bool(json.loads(marker.read_text(encoding="utf-8")).get("login_verified"))
+    except (OSError, ValueError):
+        return None
+
+
 def _hosts_from_manifest(args) -> tuple[str, list[str], list[str]] | None:
     if not (args.manifest or args.service):
         return None
@@ -347,6 +358,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--writes", type=Path, help="captured_writes.json from record.py")
     parser.add_argument("--data-host", action="append", default=[],
                         help="a declared data host whose reads to include (repeatable; without a manifest)")
+    parser.add_argument("--allow-unverified", action="store_true",
+                        help="analyze a recording whose login was not verified; the catalog is marked logged_in false")
     parser.add_argument("--keep-har", action="store_true",
                         help="keep the HAR file; by default it is deleted once every host is analyzed")
     parser.add_argument(
@@ -358,6 +371,17 @@ def main(argv: list[str] | None = None) -> int:
     from_manifest = _hosts_from_manifest(args)
     if from_manifest is None and not args.host:
         parser.error("give --manifest, --service or --host")
+    logged_in = _login_state(args.har)
+    if logged_in is False and not args.allow_unverified:
+        print(
+            f"[portal-mcp] The login was not verified in this recording, so it only shows the logged-out "
+            f"state. Record again, or pass --allow-unverified. Kept {args.har}.",
+            file=sys.stderr,
+        )
+        return 2
+    if logged_in is None:
+        print("[portal-mcp] No recording.json next to the HAR; cannot tell whether the login was verified.",
+              file=sys.stderr)
     har = json.loads(args.har.read_text(encoding="utf-8"))
 
     failed: list[str] = []
@@ -372,6 +396,7 @@ def main(argv: list[str] | None = None) -> int:
         captured = json.loads(args.writes.read_text(encoding="utf-8"))
         shown = {n.strip() for n in args.show_values_for.split(",") if n.strip()}
         catalog["writes"] = analyze_writes(captured, service_host, shown)
+    catalog["logged_in"] = logged_in
     json.dump(catalog, sys.stdout, indent=2, ensure_ascii=False)
     sys.stdout.write("\n")
     sys.stdout.flush()

@@ -166,6 +166,12 @@ class Manifest(BaseModel):
     # user. In recordings: GET over https; writes to them are captured, not sent. They never
     # get the session. Runtime tools that call them are not supported yet.
     data_hosts: list[str] = Field(default_factory=list)
+    # Hosts the pages load static files from (scripts, styles, fonts, images), for example a
+    # CDN with a library the service needs. GET only, https only, never data or navigation.
+    asset_hosts: list[str] = Field(default_factory=list)
+    # After login, login hosts are blocked. "oidc" opens them only for the standard OpenID
+    # Connect endpoints that the discovery document names, for apps that get their own token.
+    login_hosts_after_login: Literal["blocked", "oidc"] = "blocked"
 
     @field_validator("login_hosts")
     @classmethod
@@ -176,6 +182,17 @@ class Manifest(BaseModel):
     @classmethod
     def _valid_data_hosts(cls, value: list[str]) -> list[str]:
         return _validate_hosts(value, "data host")
+
+    @field_validator("asset_hosts")
+    @classmethod
+    def _valid_asset_hosts(cls, value: list[str]) -> list[str]:
+        from .diagnostics import is_tracking_host
+
+        value = _validate_hosts(value, "asset host")
+        tracking = [h for h in value if is_tracking_host(h)]
+        if tracking:
+            raise ValueError(f"tracking hosts cannot be asset hosts: {tracking}")
+        return value
 
     @field_validator("name")
     @classmethod
@@ -209,9 +226,17 @@ class Manifest(BaseModel):
             raise ValueError("login_hosts must not contain the base_url host; it is allowed already")
         if service_host in self.data_hosts:
             raise ValueError("data_hosts must not contain the base_url host; it is allowed already")
-        both = sorted(set(self.login_hosts) & set(self.data_hosts))
-        if both:
-            raise ValueError(f"a host cannot be both a login host and a data host: {both}")
+        if service_host in self.asset_hosts:
+            raise ValueError("asset_hosts must not contain the base_url host; it is allowed already")
+        lists = {"login_hosts": self.login_hosts, "data_hosts": self.data_hosts, "asset_hosts": self.asset_hosts}
+        names = list(lists)
+        for i, first in enumerate(names):
+            for second in names[i + 1:]:
+                both = sorted(set(lists[first]) & set(lists[second]))
+                if both:
+                    raise ValueError(f"a host cannot be in both {first} and {second}: {both}")
+        if self.login_hosts_after_login == "oidc" and not self.login_hosts:
+            raise ValueError("login_hosts_after_login: oidc needs at least one login host")
         return self
 
 

@@ -51,7 +51,7 @@ def test_invalid_data_hosts_are_rejected(hosts):
 
 
 def test_a_host_cannot_be_both_login_and_data_host():
-    with pytest.raises(ValueError, match="both a login host and a data host"):
+    with pytest.raises(ValueError, match="in both login_hosts and data_hosts"):
         Manifest.model_validate(_manifest(login_hosts=[DATA], data_hosts=[DATA]))
 
 

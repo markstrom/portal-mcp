@@ -115,6 +115,8 @@ async def test_recorder_uses_a_clean_profile_by_default(tmp_path, mock_base_url,
     # ...the temporary profile is gone, and the persistent one was not touched.
     assert not (out / "browser-profile").exists()
     assert persistent.is_dir()
+    # The analyzer reads this marker and refuses the recording.
+    assert json.loads((out / "recording.json").read_text())["login_verified"] is False
 
 
 async def test_discover_lists_menu_links_after_login_and_waits_for_the_choice(tmp_path, mock_base_url, monkeypatch):

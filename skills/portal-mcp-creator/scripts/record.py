@@ -40,7 +40,7 @@ from urllib.parse import urljoin, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from guard import decide, should_capture  # noqa: E402
+from guard import DISCOVERY_PATHS, decide, oidc_endpoints_from, should_capture  # noqa: E402
 from check_suggest import candidate_from, rank  # noqa: E402
 from links import COLLECT_JS, filter_menu_links, valid_visit  # noqa: E402
 
@@ -135,7 +135,11 @@ async def record(
     service_host = (urlsplit(manifest.base_url).hostname or "").lower()
     login_hosts = tuple(manifest.login_hosts)
     data_hosts = tuple(manifest.data_hosts)
+    asset_hosts = tuple(manifest.asset_hosts)
     data_host_auth: dict[str, dict] = {}
+    asset_hosts_used: dict[str, int] = {}
+    oidc_endpoints: dict[str, dict[str, set[str]]] = {}
+    oidc_after_login: dict[str, int] = {}
     headless = os.environ.get("PORTAL_MCP_HEADLESS") == "1"
 
     profile_dir, temporary_profile = profile_for_run(paths, manifest, profile, out_dir, reuse_profile)
@@ -154,6 +158,10 @@ async def record(
         "login_hosts": list(login_hosts),
         "data_hosts": list(data_hosts),
         "data_host_auth": data_host_auth,
+        "asset_hosts": list(asset_hosts),
+        "asset_hosts_used": asset_hosts_used,
+        "login_hosts_after_login": manifest.login_hosts_after_login,
+        "oidc_after_login": oidc_after_login,
         "session_check": None,
         "login_verified": False,
         "menu_links": None,
@@ -206,12 +214,30 @@ async def record(
                     decision = decide(
                         request.method, request.url, service_host, state["logged_in"],
                         allow_writes=allow_real_writes, login_hosts=login_hosts, data_hosts=data_hosts,
+                        asset_hosts=asset_hosts, resource_type=request.resource_type,
+                        login_after_login=manifest.login_hosts_after_login, oidc_endpoints=oidc_endpoints,
                     )
                     parts = urlsplit(request.url)
                     host = (parts.hostname or "").lower()
                     if decision.allowed:
                         if host in data_hosts and state["logged_in"]:
                             observe_auth(data_host_auth.setdefault(host, {}), await request.all_headers())
+                        if host in asset_hosts:
+                            asset_hosts_used[host] = asset_hosts_used.get(host, 0) + 1
+                        if host in login_hosts and state["logged_in"]:
+                            key = f"{request.method.upper()} {parts.path}"
+                            oidc_after_login[key] = oidc_after_login.get(key, 0) + 1
+                        if (manifest.login_hosts_after_login == "oidc" and host in login_hosts
+                                and request.method.upper() == "GET" and parts.path == DISCOVERY_PATHS[0]):
+                            # Learn the endpoints from the discovery document as it passes, so
+                            # only those named in it are opened after login.
+                            response = await route.fetch()
+                            try:
+                                oidc_endpoints[host] = oidc_endpoints_from(json.loads(await response.text()), host)
+                            except ValueError:
+                                pass
+                            await route.fulfill(response=response)
+                            return
                         await route.continue_()
                         return
                     if host and host != service_host and is_tracking_host(host):
@@ -396,6 +422,12 @@ async def record(
 
     summary["check_candidates"] = [_candidate_report(entry) for entry in candidates]
     _write_private(captured_path, captured)
+    # The analyzer refuses recordings whose login was not verified.
+    _write_private(out_dir / "recording.json", {
+        "service": manifest.name,
+        "login_verified": summary["login_verified"],
+        "recorded_at": datetime.now().isoformat(timespec="seconds"),
+    })
     summary["captured_writes"] = len(captured)
     summary["har"] = str(har_path) if har_path.exists() else None
     summary["captured_file"] = str(captured_path)
