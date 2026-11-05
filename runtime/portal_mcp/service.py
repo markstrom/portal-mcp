@@ -153,10 +153,14 @@ class ServiceClient:
             follow_redirects=False,
         )
 
-    async def logout(self) -> str:
-        """Call the service's logout endpoint, if any, and delete the local session."""
+    async def logout(self, profile: str | None = None) -> str:
+        """Call the service's logout endpoint, if any, and delete the local session.
+
+        With a profile, only that profile is logged out; otherwise all of them.
+        """
         remote = "no logout endpoint configured"
-        for profile in self.manifest.profiles:
+        profiles = [self.resolve_profile(profile)] if profile else self.manifest.profiles
+        for profile in profiles:
             session = self._store.load(self.name, profile)
             if session is None or not self.manifest.session.logout:
                 continue
@@ -166,7 +170,8 @@ class ServiceClient:
                 remote = f"logout endpoint answered HTTP {response.status_code}"
             except httpx.HTTPError as exc:
                 remote = f"logout endpoint could not be reached: {exc}"
-        self.forget_session()
+        for name in profiles:
+            self.forget_session(name)
         return remote
 
     def forget_session(self, profile: str | None = None) -> list[str]:
@@ -184,13 +189,15 @@ class ServiceClient:
 
     # ----- tool calls -----------------------------------------------------
 
-    async def call(self, tool_name: str, arguments: dict[str, Any]) -> Any:
+    async def call(self, tool_name: str, arguments: dict[str, Any], *, use_cache: bool = True) -> Any:
         tool = self.tool(tool_name)
+        if tool.is_write:
+            raise ServiceError(f"{tool.name} is a write tool; use prepare and confirm")
         arguments = dict(arguments)
         profile = self.resolve_profile(arguments.pop("profile", None))
 
         cache_key = (profile, tool.name, json.dumps(arguments, sort_keys=True, default=str))
-        if tool.kind == "read" and self.manifest.cache_seconds > 0:
+        if use_cache and tool.kind == "read" and self.manifest.cache_seconds > 0:
             hit = self._cache.get(cache_key)
             if hit is not None and self._clock() < hit[0]:
                 return hit[1]

@@ -6,7 +6,7 @@ captured (aborted) write requests become write candidates; their values are hidd
 except for fields named in --show-values-for (meant for fixed fields such as hidden inputs).
 
 Usage:
-  uv run --project "$CLAUDE_PLUGIN_ROOT" python analyze.py recording.har --host app.example.com > catalog.json
+  uv run --project "${CLAUDE_PLUGIN_ROOT}" python analyze.py recording.har --host app.example.com > catalog.json
 """
 
 from __future__ import annotations
@@ -22,13 +22,14 @@ from urllib.parse import parse_qsl, urlsplit
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from guard import side_effect_hint  # noqa: E402
 
+from portal_mcp.schema import schema_of  # noqa: E402,F401  (shared with self_test)
+
 PAGINATION_PARAMS = {"page", "pageindex", "page_index", "offset", "cursor", "after", "before", "limit", "pagesize", "page_size", "per_page", "perpage"}
 SENSITIVE_WORDS = (
     "national", "personnummer", "ssn", "address", "adress", "email", "phone", "telefon", "mobile",
     "iban", "account", "konto", "birth", "födel", "passport", "tax", "salary", "lön", "card", "kort",
 )
 ID_SEGMENT = re.compile(r"^(\d+|[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}|[0-9a-fA-F]{16,}|[a-z]{2,4}-\d+)$")
-MAX_DEPTH = 4
 
 
 def path_template(path: str) -> str:
@@ -41,27 +42,6 @@ def path_template(path: str) -> str:
         else:
             out.append(segment)
     return "/".join(out)
-
-
-def schema_of(value, depth: int = 0):
-    """Structure only: field names and JSON types, never values."""
-    if depth > MAX_DEPTH:
-        return "..."
-    if isinstance(value, dict):
-        return {k: schema_of(v, depth + 1) for k, v in value.items()}
-    if isinstance(value, list):
-        if not value:
-            return ["empty"]
-        return [schema_of(value[0], depth + 1)]
-    if value is None:
-        return "null"
-    if isinstance(value, bool):
-        return "boolean"
-    if isinstance(value, int):
-        return "integer"
-    if isinstance(value, float):
-        return "number"
-    return "string"
 
 
 def sensitive_fields(schema, prefix: str = "") -> list[str]:

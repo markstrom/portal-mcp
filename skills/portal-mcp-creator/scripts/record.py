@@ -9,15 +9,15 @@ The HAR file and captured_writes.json contain cookies, response bodies and form 
 Delete the recording directory once the manifest is written.
 
 Usage:
-  uv run --project "$CLAUDE_PLUGIN_ROOT" python record.py --service example \\
+  uv run --project "${CLAUDE_PLUGIN_ROOT}" python record.py --service example \\
       --visit /invoices --visit /reports --out <recording dir>
 
   # Let the user fill in and submit forms by hand; writes are captured, not sent.
   # The recording ends when the user closes the browser window.
-  uv run --project "$CLAUDE_PLUGIN_ROOT" python record.py --service example --interactive
+  uv run --project "${CLAUDE_PLUGIN_ROOT}" python record.py --service example --interactive
 
   # Only after the user explicitly agreed: let writes through for real (own host only).
-  uv run --project "$CLAUDE_PLUGIN_ROOT" python record.py --service example --interactive --allow-real-writes
+  uv run --project "${CLAUDE_PLUGIN_ROOT}" python record.py --service example --interactive --allow-real-writes
 """
 
 from __future__ import annotations

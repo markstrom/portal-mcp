@@ -1,7 +1,7 @@
 """Reconnaissance without logging in: public API docs and endpoints found in the web app's JavaScript.
 
 Usage:
-  uv run --project "$CLAUDE_PLUGIN_ROOT" python recon.py https://app.example.com > recon.json
+  uv run --project "${CLAUDE_PLUGIN_ROOT}" python recon.py https://app.example.com > recon.json
 
 Only the service's own host is contacted, and only GET requests are made.
 """

@@ -3,6 +3,9 @@
   "owner": {
     "name": "markstrom"
   },
+  "metadata": {
+    "description": "Private marketplace with one plugin: portal-mcp, MCP tools for logged-in web portals that have no open API."
+  },
   "plugins": [
     {
       "name": "portal-mcp",

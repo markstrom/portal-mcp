@@ -1,10 +1,15 @@
 {
   "name": "portal-mcp",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "description": "Create MCP tools for logged-in web portals that have no open API. You log in yourself in a visible browser window; the runtime never handles passwords.",
   "author": {
     "name": "markstrom"
   },
   "license": "UNLICENSED",
-  "keywords": ["mcp", "portal", "browser", "session"]
+  "keywords": [
+    "mcp",
+    "portal",
+    "browser",
+    "session"
+  ]
 }

@@ -8,7 +8,7 @@ Create MCP tools for logged-in web services and customer portals that have no op
 - Write actions run in two steps and only after you approve them yourself, in a dialog or a local confirmation page. The model cannot approve its own actions.
 - Every write action is logged in a local audit log.
 
-**Status: phase 3.** The runtime, the `local` login provider, encrypted session storage, read, file, write and binding tools, the `portal-mcp-creator` skill and a local mock service with tests are in place. `self_test`, several profiles per service in the skill flow, the slash commands and plugin installation checks come in phase 4.
+**Status: version 0.4.0.** Runtime, `local` login provider, encrypted sessions, read, file, write and binding tools with human approval, `self_test`, several profiles per service, desktop notifications, the `portal-mcp-creator` skill and the slash commands are in place, with tests against a local mock service.
 
 ## Requirements
 
@@ -16,12 +16,37 @@ Create MCP tools for logged-in web services and customer portals that have no op
 - [`uv`](https://docs.astral.sh/uv/) to run the runtime.
 - Google Chrome (preferred), or Playwright's Chromium: `uv run playwright install chromium`.
 
-## Install as a private plugin
+## Install as a plugin
+
+In Claude Code:
 
 ```text
 /plugin marketplace add markstrom/portal-mcp
 /plugin install portal-mcp@portal-mcp
 ```
+
+Restart Claude Code if the tools do not show up, then check with `/portal-mcp:list`.
+
+While the repository is private, Claude Code fetches it with your local git credentials. With the GitHub CLI: `gh auth login`, then `gh auth setup-git`.
+
+From the command line instead:
+
+```bash
+claude plugin marketplace add markstrom/portal-mcp
+claude plugin install portal-mcp@portal-mcp
+```
+
+Remove it again with `claude plugin uninstall portal-mcp@portal-mcp` and `claude plugin marketplace remove portal-mcp`.
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `/portal-mcp:add <url>` | Add a service: discovery, recording (you log in), catalog, your choice of tools, manifest. |
+| `/portal-mcp:update <service>` | Explore more parts of a service, or redo discovery for tools that stopped working. |
+| `/portal-mcp:list` | Services, profiles, tools and session status. |
+| `/portal-mcp:test <service> [profile]` | Run `self_test` and suggest an update if answers changed. |
+| `/portal-mcp:logout <service> [profile]` | Log out at the service and delete the local session. |
 
 ## How it fits together
 
@@ -115,6 +140,7 @@ Data is kept outside the plugin, so updates never remove it. The location follow
 ```text
 <user data dir>/portal-mcp/
   services/<service>.yaml     manifests
+  services/<service>.schemas.json  self_test baselines (structure only)
   profiles/<service>/<profile>/  browser profiles
   sessions/                   encrypted sessions
   recordings/                 temporary recordings, deleted after a manifest is written
@@ -126,6 +152,8 @@ Set `PORTAL_MCP_HOME` to use another base directory. Downloaded files go to your
 ## Manifest
 
 One file per service, `services/<name>.yaml`. The file name must match `name`. A broken manifest only affects its own service.
+
+The runtime watches `services/` and sends `tools/list_changed` when a manifest changes. Some clients still need a restart before new or changed tools show up.
 
 ```yaml
 name: example
@@ -201,7 +229,26 @@ tools:
 
 Read and file tools are prefixed with the service name, for example `example_list_invoices`. Write and binding tools become `example_prepare_pay_invoice` and `example_confirm_pay_invoice`. Every tool except `confirm_` also takes an optional `profile` argument.
 
-Common tools: `list_services`, `forget_session(service)`, `logout(service)`.
+Common tools:
+
+- `list_services`: services, profiles, session status, tools, hidden tools, load errors and the data paths.
+- `forget_session(service, profile?)`: delete the local session without contacting the service.
+- `logout(service, profile?)`: call the logout endpoint and delete the local session; without a profile, all profiles.
+- `self_test(service, profile?, update_baseline?)`: run the read tools and compare each answer's structure with the saved baseline.
+
+### Self test
+
+`self_test` runs every exposed read tool. Tools with required parameters need `test_args` in the manifest, for example `test_args: {page: 1}`; without them they are skipped. Write and file tools are never run.
+
+The first run saves the structure of each answer (field names and types, never values) in `services/<service>.schemas.json`. Later runs report removed or changed fields as `changed`, and new fields as notes. Run it with `update_baseline: true` to accept a new structure.
+
+### Profiles
+
+A service can have several profiles, for example two people in a household or a private and a business account: `profiles: [default, business]`. Each profile has its own browser profile and its own encrypted session. Every tool takes an optional `profile` argument; the first call with a new profile opens a login window for it.
+
+### Notifications
+
+The runtime shows a desktop notification when a login is waiting, when a login is done, and when a confirmation page is waiting for you. macOS uses `osascript`, Linux uses `notify-send` when it is installed, and Windows uses `desktop-notifier`. Set `PORTAL_MCP_NO_NOTIFY=1` to turn them off.
 
 ### Logging in
 

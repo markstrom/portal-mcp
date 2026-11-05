@@ -11,7 +11,10 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
+import tempfile
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 from mcp import types
@@ -19,7 +22,8 @@ from mcp import types
 from .config import Paths, has_display
 from .login.base import LoginManager
 from .manifest import load_manifests
-from .service import ServiceClient, ServiceError
+from .schema import compare, is_breaking, schema_of
+from .service import NeedsLogin, PATH_PARAM, ServiceClient, ServiceError
 from .session_store import SessionStore
 from .writes import (
     AuditLog,
@@ -35,7 +39,7 @@ from .writes import (
 
 log = logging.getLogger("portal_mcp.registry")
 
-COMMON_TOOLS = {"list_services", "forget_session", "logout"}
+COMMON_TOOLS = {"list_services", "forget_session", "logout", "self_test"}
 
 Role = Literal["call", "prepare", "confirm"]
 
@@ -191,10 +195,31 @@ class Registry:
             ),
             types.Tool(
                 name="logout",
-                description="Log out of a service (calls its logout endpoint if configured) and delete the local session.",
+                description=(
+                    "Log out of a service (calls its logout endpoint if configured) and delete the local session. "
+                    "Without a profile, all profiles of the service are logged out."
+                ),
                 inputSchema={
                     "type": "object",
-                    "properties": {"service": service_prop},
+                    "properties": {"service": service_prop, "profile": {"type": "string"}},
+                    "required": ["service"],
+                },
+                annotations=types.ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True),
+            ),
+            types.Tool(
+                name="self_test",
+                description=(
+                    "Run the read tools of a service and compare the structure of each answer with the structure "
+                    "saved when the tool was verified. Saves a baseline for tools that have none. Write and file "
+                    "tools are not run. Set update_baseline to accept the current structure as the new baseline."
+                ),
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "service": service_prop,
+                        "profile": {"type": "string"},
+                        "update_baseline": {"type": "boolean", "default": False},
+                    },
                     "required": ["service"],
                 },
                 annotations=types.ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True),
@@ -304,9 +329,104 @@ class Registry:
             removed = client.forget_session(arguments.get("profile"))
             return {"service": client.name, "removed_profiles": removed}
         if name == "logout":
-            remote = await client.logout()
-            return {"service": client.name, "remote": remote, "local_session": "deleted"}
+            profile = arguments.get("profile")
+            remote = await client.logout(profile)
+            return {
+                "service": client.name,
+                "profiles": [client.resolve_profile(profile)] if profile else client.manifest.profiles,
+                "remote": remote,
+                "local_session": "deleted",
+            }
+        if name == "self_test":
+            return await self.self_test(client, arguments.get("profile"), bool(arguments.get("update_baseline")))
         raise ServiceError(f"unknown tool {name!r}")
+
+    # ----- self test ------------------------------------------------------
+
+    def baseline_path(self, service: str):
+        return self._paths.services / f"{service}.schemas.json"
+
+    def _load_baseline(self, service: str) -> dict[str, Any]:
+        path = self.baseline_path(service)
+        if not path.exists():
+            return {"version": 1, "tools": {}}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            log.warning("baseline for %s is unreadable; starting a new one", service)
+            return {"version": 1, "tools": {}}
+        data.setdefault("tools", {})
+        return data
+
+    def _save_baseline(self, service: str, data: dict[str, Any]) -> None:
+        path = self.baseline_path(service)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-", suffix=".json")
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2, ensure_ascii=False, sort_keys=True)
+            handle.write("\n")
+        os.replace(tmp, path)
+
+    async def self_test(self, client: ServiceClient, profile: str | None, update_baseline: bool) -> dict[str, Any]:
+        """Run the read tools and compare answer structures with the saved baseline."""
+        profile = client.resolve_profile(profile)
+        baseline = self._load_baseline(client.name)
+        results: list[dict[str, Any]] = []
+        changed_baseline = False
+        for tool in client.manifest.tools:
+            entry: dict[str, Any] = {"tool": tool.name, "kind": tool.kind}
+            if not tool.exposed:
+                results.append({**entry, "status": "skipped", "reason": "not exposed"})
+                continue
+            if tool.kind != "read":
+                results.append({**entry, "status": "skipped", "reason": f"{tool.kind} tools are not run by self_test"})
+                continue
+            args = dict(tool.test_args or {})
+            needed = set(tool.params.get("required", [])) | set(PATH_PARAM.findall(tool.path))
+            missing = sorted(needed - set(args))
+            if missing:
+                results.append({**entry, "status": "skipped", "reason": f"needs test_args for {missing}"})
+                continue
+            try:
+                answer = await client.call(tool.name, {**args, "profile": profile}, use_cache=False)
+            except NeedsLogin:
+                raise
+            except ServiceError as exc:
+                results.append({**entry, "status": "error", "error": str(exc)})
+                continue
+            current = schema_of(answer)
+            saved = baseline["tools"].get(tool.name)
+            if saved is None or update_baseline:
+                baseline["tools"][tool.name] = {
+                    "schema": current,
+                    "saved_at": datetime.now(timezone.utc).isoformat(),
+                    "profile": profile,
+                }
+                changed_baseline = True
+                results.append({**entry, "status": "baseline_saved" if saved is None else "baseline_updated"})
+                continue
+            diff = compare(saved["schema"], current)
+            if is_breaking(diff):
+                results.append({**entry, "status": "changed", "differences": {k: v for k, v in diff.items() if v}})
+            elif any(diff.values()):
+                results.append({**entry, "status": "ok", "notes": {k: v for k, v in diff.items() if v}})
+            else:
+                results.append({**entry, "status": "ok"})
+        if changed_baseline:
+            self._save_baseline(client.name, baseline)
+
+        broken = [r["tool"] for r in results if r["status"] in ("changed", "error")]
+        return {
+            "service": client.name,
+            "profile": profile,
+            "results": results,
+            "baseline_file": str(self.baseline_path(client.name)),
+            "summary": (
+                f"{len(broken)} tool(s) need attention: {broken}. Suggest /portal-mcp:update {client.name} "
+                "to redo discovery for them."
+                if broken
+                else "All tested read tools match their saved structure."
+            ),
+        }
 
     def _client(self, service: Any) -> ServiceClient:
         if not isinstance(service, str) or service not in self._clients:
@@ -327,6 +447,10 @@ class Registry:
             "services": services,
             "errors": self.errors,
             "login_in_progress": {"service": pending[0], "profile": pending[1]} if pending else None,
+            "data_dir": str(self._paths.base),
+            "services_dir": str(self._paths.services),
+            "recordings_dir": str(self._paths.recordings),
+            "audit_log": str(self._paths.audit_log),
         }
 
 

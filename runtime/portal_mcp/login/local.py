@@ -41,7 +41,7 @@ class LocalLoginProvider:
 
         await notify(
             "Inloggning väntar",
-            f"Logga in på {manifest.name} i webbläsarfönstret. Runtimen väntar på dig.",
+            f"Logga in på {manifest.name} ({profile}) i webbläsarfönstret. Runtimen väntar på dig.",
         )
         async with async_playwright() as playwright:
             context = await _launch(playwright, profile_dir, headless)

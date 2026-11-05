@@ -30,6 +30,7 @@ from typing import Any, Literal
 import jsonschema
 
 from .manifest import ToolConfig
+from .notify import notify
 from .service import PATH_PARAM, ServiceError
 
 log = logging.getLogger("portal_mcp.writes")
@@ -291,6 +292,7 @@ class BrowserApproval:
         if action.page_token is None:
             action.page_token = secrets.token_urlsafe(32)
             self._opener(self.url_for(action))
+            await notify("Bekräftelse väntar", f"{action.service}: godkänn eller avbryt åtgärden i webbläsaren.")
         if action.status == "pending":
             try:
                 await asyncio.wait_for(action.decided.wait(), timeout=wait_seconds)

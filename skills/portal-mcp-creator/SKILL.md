@@ -18,10 +18,10 @@ Creates or extends a YAML manifest in `services/<name>.yaml` under the portal-mc
 7. **Only the user chooses tools.** Read tools are pre-selected. Write tools are not. Binding tools (payments, bids, orders, signatures) need limits from the user. Tools that send free text to other people are off unless the user turns them on.
 8. **Never approve an action yourself.** When a `confirm_` tool asks for approval, the user answers in a dialog or browser page. Do not click it, do not tell the user that it is safe without showing them the summary, and do not retry a declined action.
 
-Paths below use `$CLAUDE_PLUGIN_ROOT` (the plugin folder). Run scripts with:
+Paths below use `${CLAUDE_PLUGIN_ROOT}` (the plugin folder). Run scripts with:
 
 ```bash
-uv run --project "$CLAUDE_PLUGIN_ROOT" python "$CLAUDE_PLUGIN_ROOT/skills/portal-mcp-creator/scripts/<script>.py" ...
+uv run --project "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/skills/portal-mcp-creator/scripts/<script>.py" ...
 ```
 
 ## Pipeline
@@ -31,7 +31,7 @@ Ask which service (its web address) and which parts of it the user needs. Get a 
 
 ### 2. Reconnaissance (no login)
 ```bash
-uv run --project "$CLAUDE_PLUGIN_ROOT" python "$CLAUDE_PLUGIN_ROOT/skills/portal-mcp-creator/scripts/recon.py" https://<host> > recon.json
+uv run --project "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/skills/portal-mcp-creator/scripts/recon.py" https://<host> > recon.json
 ```
 This looks for public API docs (OpenAPI/Swagger) and extracts endpoint candidates from the web app's JavaScript. If there is an OpenAPI document, use it to name and type the endpoints later.
 
@@ -39,10 +39,10 @@ This looks for public API docs (OpenAPI/Swagger) and extracts endpoint candidate
 Use the `endpoints` in `recon.json` as hints for paths, methods and fields. Endpoints found with POST, PUT, PATCH or DELETE are write candidates for step 6.
 
 ### 4. Login and recording
-Write a minimal manifest draft first (name, base_url, login_url, session, empty tools) and save it as `services/<name>.yaml` in the data directory (`portal-mcp` user data dir, or `PORTAL_MCP_HOME`). Then:
+Write a minimal manifest draft first (name, base_url, login_url, session, empty tools) and save it as `<name>.yaml` in `services_dir` from the `list_services` tool. Then:
 
 ```bash
-uv run --project "$CLAUDE_PLUGIN_ROOT" python "$CLAUDE_PLUGIN_ROOT/skills/portal-mcp-creator/scripts/record.py" \
+uv run --project "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/skills/portal-mcp-creator/scripts/record.py" \
   --service <name> --visit /path/to/page --visit /another/page --out <recording dir>
 ```
 
@@ -57,7 +57,7 @@ Repeat step 4 with more `--visit` paths when the user wants more read functions.
 For each write function the user wants, have the user fill in and submit the form while writes are captured:
 
 ```bash
-uv run --project "$CLAUDE_PLUGIN_ROOT" python "$CLAUDE_PLUGIN_ROOT/skills/portal-mcp-creator/scripts/record.py" \
+uv run --project "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/skills/portal-mcp-creator/scripts/record.py" \
   --service <name> --visit /path/to/form/page --interactive --out <recording dir>
 ```
 
@@ -73,7 +73,7 @@ Real writes still go to the service's own host only, and side-effect GET links s
 
 ### 7. Analysis
 ```bash
-uv run --project "$CLAUDE_PLUGIN_ROOT" python "$CLAUDE_PLUGIN_ROOT/skills/portal-mcp-creator/scripts/analyze.py" \
+uv run --project "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/skills/portal-mcp-creator/scripts/analyze.py" \
   <recording dir>/recording.har --host <host> --writes <recording dir>/captured_writes.json > catalog.json
 ```
 The catalog holds structure only: path templates, query parameter names, pagination hints, response and body field names with types, and flags. Values are hidden. For fixed fields (hidden inputs such as a form type), you may show their values with `--show-values-for field1,field2` after checking that they are not personal data or tokens.
@@ -187,6 +187,10 @@ The runtime reloads the manifest when it changes; some clients still need a rest
 
 Read and file tools: call each one once and check that the answer has the fields from the catalog, that redacted fields are gone, and that file tools save a file with the expected start bytes.
 
+Then save the baseline for `self_test`:
+- Give every read tool with required parameters a `test_args` entry with safe example values that the user agrees to (for example `{page: 1}`). Tools without them are skipped by `self_test`.
+- Call the `self_test` tool for the service. The first run saves the answer structure of each read tool (field names and types only, no values) in `services/<name>.schemas.json`. Later runs compare against it.
+
 Write and binding tools:
 1. Compare each tool with its capture: method, path template, `body_encoding`, and field names in `body_schema` plus `body_constants` must match what was captured. Report any difference.
 2. Call `prepare_<tool>` with the user's own example values and show the summary. Check that limits refuse a value outside them (for example an amount above the maximum); do this with `prepare_` only.
@@ -195,13 +199,26 @@ Write and binding tools:
 If a tool fails, read the error, fix the manifest, and retry. Do not ask the user to share response bodies; describe the field names instead.
 
 ### 12. Cleanup
-Delete the recording directory (HAR and `captured_writes.json`). Then commit the manifest in the local manifest git repo (`git -C <services dir> add <name>.yaml && git -C <services dir> commit`, creating the repo with `git init` the first time). Never commit recordings, session files or the audit log.
+Delete the recording directory (HAR and `captured_writes.json`). Then commit the manifest and its baseline in the local manifest git repo (`git -C <services dir> add <name>.yaml <name>.schemas.json && git -C <services dir> commit`, creating the repo with `git init` the first time). Never commit recordings, session files or the audit log.
 
 ### 13. Summary
 Tell the user which tools exist now, which were left out and why, which limits apply, and where the manifest and the audit log (`audit.log` in the data directory) are.
 
 ## Adding functions to an existing service
 Run this pipeline again for the new parts only. Add new tools to the same manifest. Do not change existing tool names without asking, since clients may depend on them.
+
+## Repairing tools that stopped working
+Run `self_test` first. Tools with status `changed` or `error` are the ones to redo. Redo steps 4 to 11 for those tools only: record the pages they come from, analyze, show the user what changed (field names only), update the manifest after approval, and run `self_test` with `update_baseline: true` once the user agrees that the new structure is right.
+
+## Profiles (several logins for one service)
+A service can have several profiles, for example two household members or a private and a business account. Each profile has its own browser profile and its own encrypted session.
+- Add a profile by adding its name to `profiles` in the manifest (lowercase letters, digits, underscores) after asking the user. The first name is the default.
+- Every tool takes an optional `profile` argument. The first call with a new profile opens a login window for it.
+- Recording for a profile: `record.py --profile <name>`.
+- `logout` and `forget_session` take an optional `profile`; without it, `logout` logs out every profile.
+
+## Finding the data directory
+Call the `list_services` tool. Its answer has `data_dir`, `services_dir`, `recordings_dir` and `audit_log`. Use those paths; do not guess them.
 
 ## Notes
 - Recording is the only step that needs the user's hands, apart from approving writes.

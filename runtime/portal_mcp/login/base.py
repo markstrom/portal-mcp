@@ -12,6 +12,7 @@ import logging
 from typing import Protocol
 
 from ..manifest import Manifest
+from ..notify import notify
 from ..session_store import SessionStore, StoredSession
 
 log = logging.getLogger("portal_mcp.login")
@@ -55,6 +56,7 @@ class LoginManager:
             session = await self._provider.login(manifest, profile)
             self._store.save(manifest.name, profile, session)
             log.info("login completed for %s/%s", manifest.name, profile)
+            await notify("Inloggad", f"{manifest.name} ({profile}) är inloggad. Du kan fråga igen.")
             return session
 
         self._key = (manifest.name, profile)

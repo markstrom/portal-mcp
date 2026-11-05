@@ -74,6 +74,7 @@ class ToolConfig(BaseModel):
     limits: Limits = Field(default_factory=Limits)
     messaging: bool = False  # sends free text to other people: off unless enabled is true
     enabled: bool | None = None
+    test_args: dict[str, Any] | None = None  # arguments self_test uses for read tools
 
     @property
     def exposed(self) -> bool:
