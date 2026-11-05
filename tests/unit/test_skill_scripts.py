@@ -142,3 +142,46 @@ def test_write_analysis_flags_kinds_tokens_and_hides_values():
 
     dumped = json.dumps(writes)
     assert "SecretName" not in dumped and "Private words" not in dumped
+
+
+# ----- login hosts ----------------------------------------------------------
+
+LOGIN = "login.example.com"
+
+
+@pytest.mark.parametrize("method", ["GET", "POST"])
+def test_login_host_is_allowed_before_login(method):
+    decision = guard.decide(method, f"https://{LOGIN}/authorize", HOST, False, login_hosts=[LOGIN])
+    assert decision.allowed and "login host" in decision.reason
+
+
+@pytest.mark.parametrize("method", ["GET", "POST"])
+def test_login_host_is_blocked_after_login(method):
+    decision = guard.decide(method, f"https://{LOGIN}/authorize", HOST, True, login_hosts=[LOGIN])
+    assert not decision.allowed and "after login" in decision.reason
+    # also when real writes were allowed for the recording
+    assert not guard.decide(method, f"https://{LOGIN}/x", HOST, True, allow_writes=True, login_hosts=[LOGIN]).allowed
+
+
+def test_login_host_needs_https():
+    assert not guard.decide("GET", f"http://{LOGIN}/authorize", HOST, False, login_hosts=[LOGIN]).allowed
+
+
+def test_undeclared_hosts_stay_blocked_with_login_hosts():
+    assert not guard.decide("GET", "https://other.example.org/", HOST, False, login_hosts=[LOGIN]).allowed
+    # a look-alike sub-domain is not the declared host
+    assert not guard.decide("GET", f"https://evil.{LOGIN}/", HOST, False, login_hosts=[LOGIN]).allowed
+
+
+def test_login_host_is_never_captured():
+    for logged_in in (False, True):
+        assert not guard.should_capture("POST", f"https://{LOGIN}/token", HOST, logged_in)
+    assert guard.should_capture("POST", f"https://{HOST}/api/reports", HOST, True)
+    assert not guard.should_capture("POST", f"https://{HOST}/api/reports", HOST, False)
+    assert not guard.should_capture("GET", f"https://{HOST}/api/reports", HOST, True)
+
+
+def test_behaviour_without_login_hosts_is_unchanged():
+    assert guard.decide("POST", f"https://{HOST}/login", HOST, False).allowed
+    assert not guard.decide("GET", f"https://{LOGIN}/authorize", HOST, False).allowed
+    assert not guard.decide("POST", f"https://{HOST}/api/x", HOST, True).allowed

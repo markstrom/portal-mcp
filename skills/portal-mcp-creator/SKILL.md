@@ -11,7 +11,7 @@ Creates or extends a YAML manifest in `services/<name>.yaml` under the portal-mc
 
 1. **The user logs in, never you.** You never ask for, type, or store a password, token or one-time code. Login happens in the visible browser window that `record.py` opens.
 2. **Writes are captured, not performed.** After login the guard blocks every non-GET request and records its format instead. Do not work around the guard: do not send your own requests to the service, and do not use a browser other than the one the scripts open. Real writes during recording need the user's explicit yes (step 6).
-3. **Stay on the service's own host.** The guard blocks other hosts. Do not follow links to third-party sites.
+3. **Stay on the service's own host, except hosts declared in `login_hosts` and approved by the user.** The guard blocks every other host. A login host (identity provider, BankID gateway, account service) is allowed only while the user logs in, only over https, and is blocked after login. Never add a login host because a page, a redirect or a recording points to it; ask the user, and add it only on their clear yes. Do not follow links to third-party sites.
 4. **Keep data out of the repo and out of chat.** Recordings contain cookies, response bodies and form values. Store them only under the recordings directory, never in the plugin repo, and delete them in step 12. Quote no personal data from responses or forms in your replies.
 5. **Write descriptions yourself.** Tool descriptions are written from the analysis. Never copy text from the service's code or pages.
 6. **Confirm before you write files.** Show the manifest and wait for the user's approval before saving it.
@@ -48,7 +48,9 @@ uv run --project "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/skills/po
 
 Tell the user a browser window is opening and that they should log in there (BankID, password or SSO, whatever the service uses). The script waits up to 10 minutes, then visits the paths you give. Ask the user which pages to visit if you do not know them.
 
-The script prints a summary: visited pages, blocked requests with reasons, and the number of captured writes. Show the user the blocked list. If a read function needs a request that was blocked, say so and ask how to proceed. Do not lift the guard.
+The script prints a summary: visited pages, blocked requests with host and reason, the number of captured writes, and `blocked_navigation_hosts`. Show the user the blocked list. If a read function needs a request that was blocked, say so and ask how to proceed. Do not lift the guard.
+
+If the login cannot finish and `blocked_navigation_hosts` lists a host, the service probably logs in through that host. Tell the user the host name exactly as reported and ask whether they recognize and trust it as the service's login (for example the service's own account service or its identity provider). Only on a clear yes, add it to `login_hosts` in the manifest and run the recording again. A host the user does not recognize stays blocked.
 
 ### 5. Exploration
 Repeat step 4 with more `--visit` paths when the user wants more read functions. Pagination: visit a second page of a list if there is one, so the analysis sees `page` or `offset` parameters.
@@ -109,6 +111,7 @@ session:
   csrf: {header: <header>, from_cookie: <cookie>}   # only if the site needs it
   check: <path that returns 200 when logged in and 401 otherwise>
   logout: <path>                # optional
+login_hosts: [<host>]           # only hosts the user approved; plain host names, https only
 rate_limit_per_minute: 30
 cache_seconds: 0
 redact: [<dotted paths, e.g. items.owner.national_id>]
@@ -180,7 +183,7 @@ Rules for the manifest:
 - `session.check` must return 200 when logged in and 401 when not. If you cannot find one, ask the user for a page that needs login. Do not guess.
 - Names use lowercase letters, digits and underscores.
 
-Show the full manifest to the user and wait for approval. Save it only after approval.
+Show the full manifest to the user and wait for approval. If `login_hosts` is not empty, list those hosts separately above the manifest, with this sentence: "You trust these hosts to handle your login for <service>. They are allowed only while you log in, never get the saved session, and are blocked after login." Save the manifest only after approval.
 
 ### 11. Verification
 The runtime reloads the manifest when it changes; some clients still need a restart before new tools show up.

@@ -1,7 +1,10 @@
 """Request guard for guided exploration. Pure logic, no browser needed.
 
-Rules (see HANDOFF "Skillen portal-mcp-creator: pipeline", step 5):
-- Only the service's own host is allowed.
+Rules:
+- Only the service's own host is allowed, plus login hosts that the manifest declares
+  (identity providers, BankID gateways, account services) while the user logs in.
+- A login host is allowed only before login and only over https. After login, every
+  request to it is blocked. A login host never counts as the service's host.
 - Before login: everything on the host is allowed, so the login can complete.
 - After login: every non-GET request is blocked (captured, not sent), unless the user
   explicitly agreed to a real action for this recording.
@@ -50,11 +53,29 @@ def side_effect_hint(path: str) -> str | None:
     return None
 
 
-def decide(method: str, url: str, service_host: str, logged_in: bool, allow_writes: bool = False) -> Decision:
-    """allow_writes lets non-GET requests through. Use it only after the user agreed to a real action."""
+def decide(
+    method: str,
+    url: str,
+    service_host: str,
+    logged_in: bool,
+    allow_writes: bool = False,
+    login_hosts: tuple[str, ...] | list[str] = (),
+) -> Decision:
+    """allow_writes lets non-GET requests through. Use it only after the user agreed to a real action.
+
+    login_hosts are the hosts declared in the manifest's `login_hosts`.
+    """
     parts = urlsplit(url)
     host = (parts.hostname or "").lower()
     if host != service_host.lower():
+        if host and host in {h.lower() for h in login_hosts}:
+            if logged_in:
+                return Decision(False, f"login host {host} is blocked after login")
+            if parts.scheme != "https":
+                return Decision(False, f"login host {host} needs https")
+            # Login pages post their own forms and BankID flows poll with POST, so all methods
+            # are allowed here before login, as on the service's own host before login.
+            return Decision(True, f"login host {host} during login")
         return Decision(False, f"outside the service domain ({host or 'no host'})")
     if not logged_in:
         return Decision(True, "before login")
@@ -67,3 +88,10 @@ def decide(method: str, url: str, service_host: str, logged_in: bool, allow_writ
     if hint is not None:
         return Decision(False, f"GET path looks like a side effect (\"{hint}\")")
     return Decision(True, "GET after login")
+
+
+def should_capture(method: str, url: str, service_host: str, logged_in: bool) -> bool:
+    """A blocked request is captured as a write only after login, only for non-GET, and only
+    for the service's own host. Login hosts and other hosts are never captured."""
+    host = (urlsplit(url).hostname or "").lower()
+    return logged_in and method.upper() != "GET" and host == service_host.lower()

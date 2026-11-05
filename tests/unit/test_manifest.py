@@ -114,3 +114,45 @@ def test_messaging_tools_are_off_by_default():
     on = Manifest.model_validate(_valid_manifest(tools=[_tool(messaging=True, enabled=True)])).tools[0]
     disabled = Manifest.model_validate(_valid_manifest(tools=[_tool(enabled=False)])).tools[0]
     assert off.exposed is False and on.exposed is True and disabled.exposed is False
+
+
+def test_login_hosts_default_to_empty():
+    assert Manifest.model_validate(_valid_manifest()).login_hosts == []
+
+
+def test_valid_login_hosts_are_accepted():
+    manifest = Manifest.model_validate(_valid_manifest(login_hosts=["login.example.com", "id.example.org"]))
+    assert manifest.login_hosts == ["login.example.com", "id.example.org"]
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "https://login.example.com",
+        "login.example.com/path",
+        "login.example.com:443",
+        "Login.Example.com",
+        "127.0.0.1",
+        "::1",
+        "localhost",
+        "auth.localhost",
+        "nodot",
+        "-bad.example.com",
+        "",
+    ],
+)
+def test_invalid_login_hosts_are_rejected(host):
+    with pytest.raises(ValueError):
+        Manifest.model_validate(_valid_manifest(login_hosts=[host]))
+
+
+def test_login_hosts_reject_duplicates_and_the_service_host():
+    with pytest.raises(ValueError, match="twice"):
+        Manifest.model_validate(_valid_manifest(login_hosts=["login.example.com", "login.example.com"]))
+    service = Manifest.model_validate(_valid_manifest()).base_url
+    with pytest.raises(ValueError, match="base_url"):
+        Manifest.model_validate(
+            _valid_manifest(base_url="https://app.example.com", login_url="https://app.example.com/login",
+                            login_hosts=["app.example.com"])
+        )
+    assert service  # the default fixture stays valid

@@ -5,14 +5,26 @@ A broken manifest is reported as an error for that service only; other services 
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
 from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
+# A DNS host name: labels of letters, digits and hyphens, with at least one dot.
+HOST_RE = re.compile(r"^(?=.{1,253}$)(?!-)[a-z0-9-]{1,63}(?<!-)(\.(?!-)[a-z0-9-]{1,63}(?<!-))+$")
+
+
+def _is_ip(host: str) -> bool:
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
 TOOL_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 ToolKind = Literal["read", "write", "binding", "file"]
@@ -130,6 +142,25 @@ class Manifest(BaseModel):
     redact: list[str] = Field(default_factory=list)
     tools: list[ToolConfig] = Field(default_factory=list)
     hooks: str | None = None
+    # Other hosts the login goes through (identity provider, BankID gateway, account service).
+    # Approved by the user. Allowed during login only, over https, never sent the session.
+    login_hosts: list[str] = Field(default_factory=list)
+
+    @field_validator("login_hosts")
+    @classmethod
+    def _valid_login_hosts(cls, value: list[str]) -> list[str]:
+        seen: set[str] = set()
+        for host in value:
+            if not isinstance(host, str) or host != host.lower():
+                raise ValueError(f"login host {host!r} must be lowercase")
+            if not HOST_RE.match(host):
+                raise ValueError(f"login host {host!r} must be a plain host name, without scheme, path or port")
+            if host == "localhost" or host.endswith(".localhost") or _is_ip(host):
+                raise ValueError(f"login host {host!r} must be a public host name, not localhost or an IP address")
+            if host in seen:
+                raise ValueError(f"login host {host!r} is listed twice")
+            seen.add(host)
+        return value
 
     @field_validator("name")
     @classmethod
@@ -154,6 +185,13 @@ class Manifest(BaseModel):
         duplicates = {n for n in names if names.count(n) > 1}
         if duplicates:
             raise ValueError(f"duplicate tool names: {sorted(duplicates)}")
+        return self
+
+    @model_validator(mode="after")
+    def _login_hosts_differ_from_service(self) -> Manifest:
+        service_host = (urlsplit(self.base_url).hostname or "").lower()
+        if service_host in self.login_hosts:
+            raise ValueError("login_hosts must not contain the base_url host; it is allowed already")
         return self
 
 

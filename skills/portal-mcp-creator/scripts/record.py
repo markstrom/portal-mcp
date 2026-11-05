@@ -34,7 +34,7 @@ from urllib.parse import urljoin, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from guard import decide  # noqa: E402
+from guard import decide, should_capture  # noqa: E402
 
 from portal_mcp.config import default_paths  # noqa: E402
 from portal_mcp.login.base import LoginError  # noqa: E402
@@ -68,13 +68,17 @@ async def record(
     service_host = urlsplit(manifest.base_url).hostname or ""
     headless = os.environ.get("PORTAL_MCP_HEADLESS") == "1"
 
+    login_hosts = tuple(manifest.login_hosts)
     state = {"logged_in": False}
     blocked: list[dict] = []
     captured: list[dict] = []
+    undeclared_hosts: dict[str, int] = {}
     summary: dict = {
         "service": manifest.name,
+        "login_hosts": list(login_hosts),
         "visited": [],
         "blocked": blocked,
+        "blocked_navigation_hosts": undeclared_hosts,
         "captured_writes": 0,
         "real_writes_allowed": allow_real_writes,
         "logged_in": False,
@@ -87,14 +91,25 @@ async def record(
         try:
             async def route_handler(route, request):
                 decision = decide(
-                    request.method, request.url, service_host, state["logged_in"], allow_writes=allow_real_writes
+                    request.method,
+                    request.url,
+                    service_host,
+                    state["logged_in"],
+                    allow_writes=allow_real_writes,
+                    login_hosts=login_hosts,
                 )
                 if decision.allowed:
                     await route.continue_()
                     return
                 parts = urlsplit(request.url)
-                blocked.append({"method": request.method, "path": parts.path, "reason": decision.reason})
-                if state["logged_in"] and request.method.upper() != "GET" and (parts.hostname or "") == service_host:
+                host = (parts.hostname or "").lower()
+                blocked.append({"method": request.method, "host": host, "path": parts.path, "reason": decision.reason})
+                # A page that navigates to an undeclared host (for example a login redirect) is
+                # reported by host name, so the user can decide whether to declare it. Never automatic.
+                if request.is_navigation_request() and host != service_host and host not in login_hosts:
+                    undeclared_hosts[host] = undeclared_hosts.get(host, 0) + 1
+                # Writes are captured only for the service's own host, never for login hosts.
+                if should_capture(request.method, request.url, service_host, state["logged_in"]):
                     body = request.post_data or ""
                     captured.append({
                         "method": request.method.upper(),

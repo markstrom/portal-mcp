@@ -169,6 +169,7 @@ session:
     from_cookie: csrf
   check: /api/session         # 200 = logged in, 401 = not logged in
   logout: /api/logout         # optional, called with POST
+login_hosts: [login.example.com]  # optional: other hosts the login goes through
 rate_limit_per_minute: 30
 cache_seconds: 30             # caches read results
 redact: [items.owner.national_id]
@@ -251,6 +252,8 @@ A service can have several profiles, for example two people in a household or a 
 The runtime shows a desktop notification when a login is waiting, when a login is done, and when a confirmation page is waiting for you. macOS uses `osascript`, Linux uses `notify-send` when it is installed, and Windows uses `desktop-notifier`. Set `PORTAL_MCP_NO_NOTIFY=1` to turn them off.
 
 ### Logging in
+
+Many services log in through another host, for example an identity provider or an account service on its own address. List such hosts in `login_hosts`, as plain host names. When the creator skill records a service, a login host is allowed only while you log in, only over https, and is blocked after login. The saved session only ever holds cookies for the `base_url` host. Hosts are never added automatically: if a recording is stopped by an unknown host, the skill asks you whether you trust it.
 
 When a tool needs a session and none is valid, a browser window opens on `login_url` and a desktop notification asks you to log in. The runtime checks the session check endpoint and captures the session once you are logged in. A tool call waits up to about 20 seconds; if you are not done by then, it tells you to finish in the window and call again. The login continues in the background. Only one login runs at a time.
 
