@@ -45,13 +45,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from guard import DISCOVERY_PATHS, decide, oidc_endpoints_from, should_capture  # noqa: E402
 from check_suggest import candidate_from, rank  # noqa: E402
-from explore import COLLECT_CONTROLS_JS, MAX_CLICKS_PER_PAGE, control_key, pick_controls  # noqa: E402
+from explore import (  # noqa: E402
+    COLLECT_CONTROLS_JS, COLLECT_SEARCH_JS, MAX_CLICKS_PER_PAGE, control_key, decline_control, pick_controls,
+    search_fields,
+)  # noqa: E402
 from links import COLLECT_JS, filter_menu_links, valid_visit  # noqa: E402
 
 from portal_mcp.config import default_paths  # noqa: E402
 from portal_mcp.diagnostics import (  # noqa: E402
     cookie_summary,
     header_too_large_message,
+    is_consent_host,
     is_header_too_large,
     is_tracking_host,
 )
@@ -71,6 +75,24 @@ from portal_mcp.login.local import (  # noqa: E402
 from portal_mcp.manifest import Manifest, load_manifest_file  # noqa: E402
 
 MAX_CAPTURED_BODY = 64 * 1024
+# Storage keys that look like an app's token. Only names and the shape of the value are
+# reported, never the value.
+TOKEN_KEYS_JS = r"""() => {
+  const out = [];
+  const looks = /token|oidc|auth|msal|access|jwt|session/i;
+  for (const kind of ['sessionStorage', 'localStorage']) {
+    const store = window[kind];
+    for (let i = 0; i < store.length; i++) {
+      const key = store.key(i);
+      if (!looks.test(key)) continue;
+      const value = store.getItem(key) || '';
+      let fields = [];
+      try { const parsed = JSON.parse(value); if (parsed && typeof parsed === 'object') fields = Object.keys(parsed).slice(0, 30); } catch (e) {}
+      out.push({source: kind + ':' + key, json_fields: fields, looks_like_jwt: /^ey[A-Za-z0-9_-]+\./.test(value)});
+    }
+  }
+  return out;
+}"""
 # Header names that carry credentials. Only their names are ever reported, never values.
 AUTH_HEADER_NAMES = ("x-api-key", "api-key", "apikey", "x-auth-token", "x-access-token", "x-xsrf-token",
                      "x-csrf-token", "ocp-apim-subscription-key", "x-functions-key", "x-session-token")
@@ -129,6 +151,9 @@ async def record(
     suggest_check: bool = False,
     explore: bool = False,
     click_wait: float = 5.0,
+    search_text: str = "test",
+    depth: int = 1,
+    max_pages: int = 100,
 ) -> dict:
     from playwright.async_api import async_playwright
 
@@ -144,6 +169,7 @@ async def record(
     asset_hosts = tuple(manifest.asset_hosts)
     data_host_auth: dict[str, dict] = {}
     asset_hosts_used: dict[str, int] = {}
+    consent_hosts_used: dict[str, int] = {}
     oidc_endpoints: dict[str, dict[str, set[str]]] = {}
     oidc_after_login: dict[str, int] = {}
     headless = os.environ.get("PORTAL_MCP_HEADLESS") == "1"
@@ -151,7 +177,7 @@ async def record(
     # still treats the run as logged in, so every write is blocked and captured.
     public = not manifest.needs_login
     # Traffic counters, read before and after each exploring click.
-    traffic = {"requests": 0, "json_reads": 0, "data_host": 0, "captured": 0}
+    traffic = {"requests": 0, "json_reads": 0, "data_host": 0, "captured": 0, "downloads": 0}
     explored: list[dict] = []
 
     profile_dir, temporary_profile = profile_for_run(paths, manifest, profile, out_dir, reuse_profile)
@@ -172,6 +198,7 @@ async def record(
         "data_host_auth": data_host_auth,
         "asset_hosts": list(asset_hosts),
         "asset_hosts_used": asset_hosts_used,
+        "consent_hosts_used": consent_hosts_used,
         "login_hosts_after_login": manifest.login_hosts_after_login,
         "oidc_after_login": oidc_after_login,
         "session_check": None,
@@ -180,6 +207,7 @@ async def record(
         "menu_links": None,
         "visited": [],
         "explored": None,
+        "token_storage": None,
         "blocked_tracking": blocked_tracking,
         "blocked_other": blocked_other,
         "blocked_navigation_hosts": undeclared_hosts,
@@ -245,6 +273,8 @@ async def record(
                             observe_auth(data_host_auth.setdefault(host, {}), await request.all_headers())
                         if host in asset_hosts:
                             asset_hosts_used[host] = asset_hosts_used.get(host, 0) + 1
+                        if is_consent_host(host):
+                            consent_hosts_used[host] = consent_hosts_used.get(host, 0) + 1
                         if host in login_hosts and state["logged_in"]:
                             key = f"{request.method.upper()} {parts.path}"
                             oidc_after_login[key] = oidc_after_login.get(key, 0) + 1
@@ -318,6 +348,14 @@ async def record(
                 if explore:
                     # A click must never leave a dialog or a second window behind.
                     context.on("page", lambda p: asyncio.ensure_future(_close_extra(context, p)))
+                    # Files a click starts are counted, not kept: Playwright deletes them with the context.
+
+                    def on_download(_download):
+                        traffic["downloads"] += 1
+
+                    context.on("page", lambda p: p.on("download", on_download))
+                    for existing in context.pages:
+                        existing.on("download", on_download)
                 context.on("response", lambda r: response_tasks.append(asyncio.ensure_future(inspect_response(r))))
 
                 page = await _first_page(context)
@@ -391,32 +429,59 @@ async def record(
                         except ValueError:
                             chosen = []
 
-                # 5. Visits.
-                for visit in [*visits, *chosen]:
+                # 5. Visits, breadth first. With depth > 1, links found on visited pages are
+                # visited too (same host, same filters as menu links), up to max_pages in all.
+                queue: list[tuple[object, int]] = [(v, 1) for v in [*visits, *chosen]]
+                queued = {str(v) for v, _ in queue}
+                followed = 0
+                while queue:
+                    visit, level = queue.pop(0)
                     path = valid_visit(visit, service_host)
                     if path is None:
                         summary["visited"].append({"path": str(visit)[:200], "status": "refused"})
                         continue
+                    if sum(1 for v in summary["visited"] if v["status"] != "refused") >= max_pages:
+                        summary["visited"].append({"path": path, "status": "skipped: max_pages"})
+                        continue
                     url = urljoin(manifest.base_url.rstrip("/") + "/", path.lstrip("/"))
                     try:
                         await page.goto(url, wait_until="networkidle", timeout=30000)
-                        summary["visited"].append({"path": path, "status": "ok"})
+                        summary["visited"].append({"path": path, "status": "ok", "depth": level})
                     except Exception as exc:  # keep going with the other pages
                         summary["visited"].append({"path": path, "status": f"error: {type(exc).__name__}"})
                         continue
+                    if level < depth:
+                        try:
+                            found = filter_menu_links(await page.evaluate(COLLECT_JS), service_host,
+                                                      logged_in=state["logged_in"])
+                        except Exception:
+                            found = {"links": []}
+                        for link in found["links"]:
+                            if link["path"] not in queued:
+                                queued.add(link["path"])
+                                queue.append((link["path"], level + 1))
+                                followed += 1
                     if explore:
-                        explored.append(await explore_page(page, url, path, traffic, click_wait))
+                        explored.append(await explore_page(page, url, path, traffic, click_wait, search_text))
+                summary["links_followed"] = followed
 
                 if explore:
                     _write_private(out_dir / "explored.json", explored)
                     summary["explored"] = {
-                        "pages": [{k: v for k, v in e.items() if k != "controls"} for e in explored],
+                        "pages": [{k: v for k, v in e.items() if k not in ("controls", "searches")} for e in explored],
                         "file": str(out_dir / "explored.json"),
                     }
                     status("Explored {} pages: {} clicks, {} JSON reads and {} data-host requests after clicks."
                            .format(len(explored), sum(e["clicked"] for e in explored),
                                    sum(e["json_reads"] for e in explored),
                                    sum(e["data_host_requests"] for e in explored)))
+
+                # Where the pages' apps keep their tokens: key names only, for data_auth.
+                if state["logged_in"]:
+                    try:
+                        summary["token_storage"] = await page.evaluate(TOKEN_KEYS_JS)
+                    except Exception:
+                        summary["token_storage"] = []
 
                 # 6. Suggested session checks: JSON endpoints the pages loaded, tested both ways.
                 if suggest:
@@ -499,13 +564,77 @@ async def _settle(page, seconds: float) -> None:
     await asyncio.sleep(0.3)
 
 
-async def explore_page(page, url: str, path: str, traffic: dict, click_wait: float) -> dict:
-    """Click the page's safe controls one at a time and note what each click caused."""
+def _delta(traffic: dict, start: dict) -> dict:
+    return {
+        "requests": traffic["requests"] - start["requests"],
+        "json_reads": traffic["json_reads"] - start["json_reads"],
+        "data_host_requests": traffic["data_host"] - start["data_host"],
+        "captured_writes": traffic["captured"] - start["captured"],
+        "downloads": traffic["downloads"] - start["downloads"],
+    }
+
+
+async def _back_to(page, url: str, click_wait: float) -> None:
+    if urlsplit(page.url).path != urlsplit(url).path:
+        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+        await _settle(page, click_wait)
+
+
+async def decline_banner(page, click_wait: float) -> str | None:
+    """Answer a cookie banner with its decline choice, if one is showing. Never accept."""
+    try:
+        target = decline_control(await page.evaluate(COLLECT_CONTROLS_JS))
+        if target is None:
+            return None
+        await page.locator(f'[data-pmcp-explore="{target["id"]}"]').first.click(timeout=3000)
+        await _settle(page, min(click_wait, 2))
+        return "declined"
+    except Exception as exc:
+        return f"error: {type(exc).__name__}"
+
+
+async def explore_searches(page, url: str, traffic: dict, click_wait: float, text: str) -> list[dict]:
+    """Fill each search field with the probe text and submit it, one at a time."""
+    results: list[dict] = []
+    try:
+        fields = search_fields(await page.evaluate(COLLECT_SEARCH_JS))
+    except Exception:
+        return results
+    for index, field in enumerate(fields):
+        if index:
+            await _back_to(page, url, click_wait)
+            try:
+                field = next(f for f in search_fields(await page.evaluate(COLLECT_SEARCH_JS)) if f["hint"] == field["hint"])
+            except (StopIteration, Exception):
+                continue
+        start = dict(traffic)
+        outcome = "ok"
+        try:
+            box = page.locator(f'[data-pmcp-search="{field["id"]}"]').first
+            await box.fill(text, timeout=3000)
+            await _settle(page, 1.5)  # suggestions while typing
+            await box.press("Enter", timeout=3000)
+            await _settle(page, click_wait)
+        except Exception as exc:
+            outcome = f"error: {type(exc).__name__}"
+        results.append({"field": field.get("hint", "")[:80], "form_method": field.get("form_method"),
+                        "outcome": outcome, "left_page": urlsplit(page.url).path != urlsplit(url).path,
+                        **_delta(traffic, start)})
+    await _back_to(page, url, click_wait)
+    return results
+
+
+async def explore_page(page, url: str, path: str, traffic: dict, click_wait: float,
+                       search_text: str = "test") -> dict:
+    """Fill search fields, then click the page's safe controls one at a time, and note what
+    each step caused."""
     def dismiss(dialog):
         asyncio.ensure_future(dialog.dismiss())
 
     page.on("dialog", dismiss)
     before_page = dict(traffic)
+    consent = await decline_banner(page, click_wait)
+    searches = await explore_searches(page, url, traffic, click_wait, search_text) if search_text else []
     clicked: set[str] = set()
     skipped: dict[str, str] = {}
     controls: list[dict] = []
@@ -535,13 +664,10 @@ async def explore_page(page, url: str, path: str, traffic: dict, click_wait: flo
             except Exception as exc:
                 outcome = f"error: {type(exc).__name__}"
             controls.append({
-                "text": target.get("text", ""),
+                "text": target.get("text", "") or "(icon that expands)",
                 "kind": target.get("role") or target.get("tag"),
                 "outcome": outcome,
-                "requests": traffic["requests"] - start["requests"],
-                "json_reads": traffic["json_reads"] - start["json_reads"],
-                "data_host_requests": traffic["data_host"] - start["data_host"],
-                "captured_writes": traffic["captured"] - start["captured"],
+                **_delta(traffic, start),
                 "left_page": urlsplit(page.url).path != urlsplit(url).path,
             })
     finally:
@@ -551,12 +677,12 @@ async def explore_page(page, url: str, path: str, traffic: dict, click_wait: flo
         reasons[reason] = reasons.get(reason, 0) + 1
     return {
         "path": path,
+        "consent_banner": consent,
+        "searched": len(searches),
         "clicked": len(controls),
         "skipped": reasons,
-        "requests": traffic["requests"] - before_page["requests"],
-        "json_reads": traffic["json_reads"] - before_page["json_reads"],
-        "data_host_requests": traffic["data_host"] - before_page["data_host"],
-        "captured_writes": traffic["captured"] - before_page["captured"],
+        **_delta(traffic, before_page),
+        "searches": searches,
         "controls": controls,
     }
 
@@ -604,6 +730,11 @@ def main(argv: list[str] | None = None) -> None:
                         help="use the persistent browser profile instead of a clean one (only if the user chose it)")
     parser.add_argument("--explore", action="store_true",
                         help="on each visited page, click safe controls (tabs, sections, show more) itself")
+    parser.add_argument("--depth", type=int, default=None,
+                        help="follow links found on visited pages this many levels deep (default 2 with --discover)")
+    parser.add_argument("--max-pages", type=int, default=100, help="visit at most this many pages in all")
+    parser.add_argument("--search-text", default="test",
+                        help="text --explore types into search fields ('' to leave them alone)")
     parser.add_argument("--interactive", action="store_true", help="keep the window open until the user closes it")
     parser.add_argument("--interactive-timeout", type=float, default=1800)
     parser.add_argument(
@@ -627,6 +758,9 @@ def main(argv: list[str] | None = None) -> None:
         check_candidates=args.check_candidate,
         suggest_check=args.suggest_check,
         explore=args.explore,
+        search_text=args.search_text,
+        depth=args.depth if args.depth is not None else (2 if args.discover else 1),
+        max_pages=args.max_pages,
     ))
     json.dump(summary, sys.stdout, indent=2, ensure_ascii=False)
     sys.stdout.write("\n")

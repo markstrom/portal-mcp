@@ -72,7 +72,7 @@ async def test_a_public_service_opens_no_login_and_sends_no_session(tmp_path, mo
             return httpx.Response(200, json={"open": True})
         return httpx.Response(401)
 
-    def fake_http(session):
+    def fake_http(session, tool=None):
         assert session is None
         return httpx.AsyncClient(base_url=client.manifest.base_url, transport=httpx.MockTransport(handler))
 

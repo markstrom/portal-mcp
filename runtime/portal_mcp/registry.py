@@ -92,7 +92,8 @@ class Registry:
             if previous is not None and previous.manifest == manifest:
                 clients[name] = previous  # keep rate-limit and cache state for unchanged services
             else:
-                clients[name] = ServiceClient(manifest, self._store, self._logins, self._downloads)
+                clients[name] = ServiceClient(manifest, self._store, self._logins, self._downloads,
+                                              uploads=self._paths.uploads)
 
         tools: dict[str, tuple[str, str, Role]] = {}
         hidden: dict[str, str] = {}
@@ -268,7 +269,17 @@ class Registry:
         except WriteError as exc:
             self.audit.write("refused", service=client.name, tool=tool.name, profile=profile, call=args, reason=str(exc))
             raise
-        summary = build_summary(client.name, tool, args, profile)
+        files = {}
+        for name in tool.file_fields:
+            if name in args:
+                try:
+                    path = client.upload_path(args[name])
+                except ServiceError as exc:
+                    self.audit.write("refused", service=client.name, tool=tool.name, profile=profile, call=args,
+                                     reason=str(exc))
+                    raise
+                files[name] = f"{path.name} ({path.stat().st_size} bytes)"
+        summary = build_summary(client.name, tool, args, profile, files=files)
         action = self.pending.create(client.name, tool.name, profile, args, summary)
         self.audit.write("prepared", service=client.name, tool=tool.name, profile=profile, call=args, code=action.code)
         return {

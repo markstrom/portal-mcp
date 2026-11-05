@@ -35,12 +35,17 @@ class Paths:
         return self.base / "recordings"
 
     @property
+    def uploads(self) -> Path:
+        """Files that upload tools may send. Tools refuse paths outside this directory."""
+        return self.base / "uploads"
+
+    @property
     def audit_log(self) -> Path:
         return self.base / "audit.log"
 
     def ensure(self) -> None:
         """Create the data directories. Directories that hold private data get mode 0700."""
-        for directory in (self.base, self.services, self.profiles, self.sessions, self.recordings):
+        for directory in (self.base, self.services, self.profiles, self.sessions, self.recordings, self.uploads):
             directory.mkdir(parents=True, exist_ok=True)
             os.chmod(directory, 0o700)
 

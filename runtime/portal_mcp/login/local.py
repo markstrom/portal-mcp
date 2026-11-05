@@ -16,6 +16,7 @@ without any cookies cannot tell logged in from logged out, so the login refuses 
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import socket
@@ -77,6 +78,8 @@ class LocalLoginProvider:
                 page = await _first_page(context)
                 await page.goto(manifest.login_url)
                 session = await wait_for_login(context, page, manifest, self._timeout, self._poll)
+                if manifest.data_auth is not None:
+                    session.data_token = await read_data_token(page, manifest)
                 return session
             finally:
                 await context.close()
@@ -428,6 +431,75 @@ def login_not_verified_message(manifest: Manifest, observation: LoginObservation
         f"the login to {manifest.name} was not verified within {int(timeout)} seconds. "
         f"session.check {manifest.session.check} answered: {answered}.{detail}"
     )
+
+
+# Finds the first storage value whose key matches a pattern where "*" matches anything.
+_STORAGE_MATCH_JS = """([kind, pattern]) => {
+  const store = window[kind];
+  const parts = pattern.split('*');
+  const matches = (key) => {
+    if (parts.length === 1) return key === pattern;
+    if (!key.startsWith(parts[0])) return false;
+    const last = parts[parts.length - 1];
+    if (!key.endsWith(last) || key.length < parts[0].length + last.length) return false;
+    let pos = parts[0].length;
+    for (let i = 1; i < parts.length - 1; i++) {
+      const at = key.indexOf(parts[i], pos);
+      if (at < 0) return false;
+      pos = at + parts[i].length;
+    }
+    return pos <= key.length - last.length;
+  };
+  for (let i = 0; i < store.length; i++) {
+    const key = store.key(i);
+    if (matches(key)) return store.getItem(key);
+  }
+  return null;
+}"""
+
+
+def token_from_value(raw: str | None, field: str | None) -> str | None:
+    """The token itself: the raw value, or a dotted field of a JSON value."""
+    if not raw:
+        return None
+    if not field:
+        return raw
+    try:
+        value: Any = json.loads(raw)
+    except ValueError:
+        return None
+    for part in field.split("."):
+        if not isinstance(value, dict):
+            return None
+        value = value.get(part)
+    return value if isinstance(value, str) and value else None
+
+
+async def read_data_token(page: Any, manifest: Manifest, timeout: float = 60, poll: float = 1.0) -> str | None:
+    """After the login: open the page that makes the service's app get its token, and read it.
+
+    Returns None (and logs why) when no token appears in time; tools on data hosts then say
+    that the token is missing."""
+    auth = manifest.data_auth
+    if auth is None:
+        return None
+    kind, _, pattern = auth.source.partition(":")
+    url = manifest.base_url.rstrip("/") + auth.page
+    try:
+        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+    except Exception as exc:  # the page may keep loading; the token can still arrive
+        log.info("data_auth page did not finish loading: %s", type(exc).__name__)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            token = token_from_value(await page.evaluate(_STORAGE_MATCH_JS, [kind, pattern]), auth.field)
+        except Exception:
+            token = None
+        if token:
+            return token
+        await asyncio.sleep(poll)
+    log.warning("no token for data hosts appeared in %s within %d seconds", auth.source, int(timeout))
+    return None
 
 
 async def _read_storage(page: Any, source: str) -> str | None:

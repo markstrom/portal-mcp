@@ -25,6 +25,8 @@ log = logging.getLogger("portal_mcp.service")
 
 SESSION_CHECK_INTERVAL = 60.0  # the session is checked at most once per minute per profile
 MAX_RESPONSE_BYTES = 10 * 1024 * 1024
+MAX_FILE_BYTES = 200 * 1024 * 1024  # file tools may download more than reads return
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 PATH_PARAM = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
 
 
@@ -63,11 +65,14 @@ class ServiceClient:
         logins: LoginManager,
         downloads: Path,
         clock=time.monotonic,
+        *,
+        uploads: Path | None = None,
     ):
         self.manifest = manifest
         self._store = store
         self._logins = logins
         self._downloads = downloads
+        self._uploads = uploads
         self._clock = clock
         self._rate = RateLimiter(manifest.rate_limit_per_minute, clock)
         self._cache: dict[tuple[str, str, str], tuple[float, Any]] = {}
@@ -136,7 +141,20 @@ class ServiceClient:
                 raise ServiceError(f"could not reach {self.name}: {exc}") from exc
             return response.status_code
 
-    def _http(self, session: StoredSession | None) -> httpx.AsyncClient:
+    def _http(self, session: StoredSession | None, tool: ToolConfig | None = None) -> httpx.AsyncClient:
+        if tool is not None and tool.host is not None:
+            # A data host: only the app's token, never the service's cookies or CSRF token.
+            if session is None or not session.data_token:
+                raise ServiceError(
+                    f"no token for {tool.host}: the service's app did not store one after the login. "
+                    "Check data_auth in the manifest, or call forget_session and log in again."
+                )
+            return httpx.AsyncClient(
+                base_url=f"https://{tool.host}",
+                headers={"accept": "application/json, */*;q=0.5", "authorization": f"Bearer {session.data_token}"},
+                timeout=30,
+                follow_redirects=False,
+            )
         cookies = httpx.Cookies()
         if session is not None:
             for cookie in session.cookies:
@@ -146,7 +164,7 @@ class ServiceClient:
             if session.bearer:
                 headers["authorization"] = f"Bearer {session.bearer}"
             csrf = self.manifest.session.csrf
-            if csrf is not None and session.csrf:
+            if csrf is not None and csrf.header and session.csrf:
                 headers[csrf.header] = session.csrf
         return httpx.AsyncClient(
             base_url=self.manifest.base_url,
@@ -210,8 +228,13 @@ class ServiceClient:
                 return hit[1]
 
         self._rate.acquire()
-        session = await self._ensure_session(profile)
+        session = None if tool.public else await self._ensure_session(profile)
         response = await self._send(tool, arguments, session)
+        if response.status_code in (401, 403) and tool.public:
+            raise ServiceError(
+                f"{self.name} answered HTTP {response.status_code} for {tool.name}, a tool marked public. "
+                "It may need the login after all; remove public from it in the manifest."
+            )
         if response.status_code in (401, 403) and not self.manifest.needs_login:
             raise ServiceError(
                 f"{self.name} answered HTTP {response.status_code} for {tool.name}. This service is set up "
@@ -270,14 +293,26 @@ class ServiceClient:
                 raise ServiceError(f"missing argument {match!r} for {tool.name}")
             path = path.replace("{" + match + "}", quote(str(args.pop(match)), safe=""))
 
-        async with self._http(session) as client:
+        async with self._http(session, tool) as client:
             try:
                 if tool.method == "GET":
                     response = await client.request("GET", path, params=_query(args))
                 else:
                     body = {**tool.body_constants, **args}
+                    csrf = self.manifest.session.csrf
+                    on_base_host = tool.host is None and session is not None
+                    if on_base_host and csrf is not None and csrf.from_page is not None:
+                        # A fresh token from the page, read with the session just before the write.
+                        session.csrf = await self._csrf_from_page(client, csrf.from_page.path, csrf.from_page.name)
+                        if csrf.header:
+                            client.headers[csrf.header] = session.csrf
+                    if on_base_host and csrf is not None and csrf.body_field and session.csrf:
+                        body[csrf.body_field] = session.csrf
                     if not body:
                         response = await client.request(tool.method, path)
+                    elif tool.body_encoding == "multipart":
+                        files = {name: self._upload(tool, name, body.pop(name)) for name in tool.file_fields if name in body}
+                        response = await client.request(tool.method, path, data=_form(body), files=files)
                     elif tool.body_encoding == "form":
                         response = await client.request(tool.method, path, data=_form(body))
                     else:
@@ -285,8 +320,9 @@ class ServiceClient:
             except httpx.HTTPError as exc:
                 raise ServiceError(f"could not reach {self.name}: {exc}") from exc
 
-        if len(response.content) > MAX_RESPONSE_BYTES:
-            raise ServiceError(f"response from {self.name} is larger than {MAX_RESPONSE_BYTES} bytes")
+        limit = MAX_FILE_BYTES if tool.kind == "file" else MAX_RESPONSE_BYTES
+        if len(response.content) > limit:
+            raise ServiceError(f"response from {self.name} is larger than {limit} bytes")
         if is_header_too_large(response.status_code, response.text[:4000], response.reason_phrase):
             host = urlsplit(self.manifest.base_url).hostname or self.manifest.base_url
             if session is None:
@@ -297,6 +333,37 @@ class ServiceClient:
                 "to log in with a clean profile."
             )
         return response
+
+    async def _csrf_from_page(self, client: httpx.AsyncClient, path: str, name: str) -> str:
+        response = await client.get(path)
+        token = csrf_token_in(response.text, name) if response.status_code == 200 else None
+        if not token:
+            raise ServiceError(f"no CSRF token named {name!r} on {path} (HTTP {response.status_code})")
+        return token
+
+    def upload_path(self, value: Any) -> Path:
+        """A file argument of an upload tool: a path inside the uploads directory, nowhere else."""
+        if self._uploads is None:
+            raise ServiceError("uploads are not available")
+        if not isinstance(value, str) or not value:
+            raise ServiceError("a file argument must be a file name or path in the uploads directory")
+        root = self._uploads.resolve()
+        candidate = Path(value)
+        path = (candidate if candidate.is_absolute() else root / candidate).resolve()
+        if root not in path.parents:
+            raise ServiceError(f"files can only be uploaded from {root}")
+        if not path.is_file():
+            raise ServiceError(f"no file {path.name!r} in {root}")
+        if path.stat().st_size > MAX_UPLOAD_BYTES:
+            raise ServiceError(f"{path.name} is larger than {MAX_UPLOAD_BYTES} bytes")
+        return path
+
+    def _upload(self, tool: ToolConfig, field_name: str, value: Any) -> tuple[str, bytes, str]:
+        import mimetypes
+
+        path = self.upload_path(value)
+        kind = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        return (path.name, path.read_bytes(), kind)
 
     def _shape_json(self, tool: ToolConfig, response: httpx.Response) -> Any:
         content_type = response.headers.get("content-type", "")
@@ -321,6 +388,24 @@ class ServiceClient:
             "bytes": len(response.content),
             "content_type": response.headers.get("content-type", ""),
         }
+
+
+_INPUT_TAG = re.compile(r"<(input|meta)\b[^>]*>", re.IGNORECASE)
+_ATTR = re.compile(r"""([a-zA-Z_:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))""")
+
+
+def csrf_token_in(page_html: str, name: str) -> str | None:
+    """The value of <input name=NAME value=...> or the content of <meta name=NAME content=...>."""
+    import html as html_lib
+
+    for match in _INPUT_TAG.finditer(page_html):
+        attrs = {m.group(1).lower(): m.group(2) or m.group(3) or m.group(4) or "" for m in _ATTR.finditer(match.group(0))}
+        if attrs.get("name") != name:
+            continue
+        value = attrs.get("value") if match.group(1).lower() == "input" else attrs.get("content")
+        if value:
+            return html_lib.unescape(value)
+    return None
 
 
 def _query(args: dict[str, Any]) -> list[tuple[str, str]]:

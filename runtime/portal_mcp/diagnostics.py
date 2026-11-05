@@ -87,10 +87,6 @@ TRACKING_DOMAINS = (
     "dc.services.visualstudio.com",
     "js.monitor.azure.com",
     "monitor.azure.com",
-    "cookiebot.com",
-    "cookielaw.org",
-    "onetrust.com",
-    "consensu.org",
     "hotjar.com",
     "hotjar.io",
     "clarity.ms",
@@ -113,6 +109,36 @@ TRACKING_DOMAINS = (
 )
 
 
-def is_tracking_host(host: str) -> bool:
+# Consent managers: the cookie banners. Some pages show nothing until the banner has loaded
+# and been answered, so recordings may load them (GET only) and decline. They are still
+# tracking-adjacent, so they can never be declared as hosts in a manifest.
+CONSENT_DOMAINS = (
+    "cookiebot.com",
+    "cookielaw.org",
+    "onetrust.com",
+    "consensu.org",
+    "usercentrics.eu",
+    "usercentrics.com",
+    "didomi.io",
+    "cookiefirst.com",
+    "cookieinformation.com",
+    "consentmanager.net",
+    "iubenda.com",
+    "trustarc.com",
+    "termly.io",
+    "cookieyes.com",
+)
+
+
+def _matches(host: str, domains: tuple[str, ...]) -> bool:
     host = host.lower().rstrip(".")
-    return any(host == domain or host.endswith("." + domain) for domain in TRACKING_DOMAINS)
+    return any(host == domain or host.endswith("." + domain) for domain in domains)
+
+
+def is_consent_host(host: str) -> bool:
+    return _matches(host, CONSENT_DOMAINS)
+
+
+def is_tracking_host(host: str) -> bool:
+    """Tracking, analytics and monitoring hosts, and consent managers (never declarable)."""
+    return _matches(host, TRACKING_DOMAINS) or is_consent_host(host)

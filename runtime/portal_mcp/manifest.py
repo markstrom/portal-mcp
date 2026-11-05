@@ -46,9 +46,62 @@ ToolKind = Literal["read", "write", "binding", "file"]
 HttpMethod = Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
 
 
+class CsrfPage(BaseModel):
+    """A page on the base host whose hidden input or meta tag holds the CSRF token."""
+
+    path: str
+    name: str  # name of the hidden input (value=...) or meta tag (content=...)
+
+    @field_validator("path")
+    @classmethod
+    def _valid_path(cls, value: str) -> str:
+        if not value.startswith("/") or value.startswith("//") or "://" in value:
+            raise ValueError("csrf.from_page.path must be a path on the base_url host")
+        return value
+
+
 class CsrfConfig(BaseModel):
-    header: str
-    from_cookie: str
+    """Where the CSRF token comes from (a cookie or a page) and where it goes (a header or a
+    body field)."""
+
+    header: str | None = None
+    from_cookie: str | None = None
+    from_page: CsrfPage | None = None
+    body_field: str | None = None
+
+    @model_validator(mode="after")
+    def _one_source_and_a_target(self) -> CsrfConfig:
+        if (self.from_cookie is None) == (self.from_page is None):
+            raise ValueError("csrf needs exactly one of from_cookie and from_page")
+        if self.header is None and self.body_field is None:
+            raise ValueError("csrf needs a header or a body_field")
+        return self
+
+
+class DataAuth(BaseModel):
+    """How tools on a data host authenticate: with the token the service's own app gets after
+    login. The app keeps it in the browser's storage; the runtime opens `page` after the login,
+    reads the token from `source` and sends it only to declared data hosts."""
+
+    model_config = ConfigDict(extra="forbid")
+    source: str  # "sessionStorage:<key>" or "localStorage:<key>"; "*" matches any characters
+    field: str | None = None  # dotted path in a JSON value, e.g. "access_token"
+    page: str  # path on the base host that makes the app get its token
+
+    @field_validator("source")
+    @classmethod
+    def _valid_source(cls, value: str) -> str:
+        kind, _, key = value.partition(":")
+        if kind not in ("localStorage", "sessionStorage") or not key:
+            raise ValueError("data_auth.source must be 'sessionStorage:<key>' or 'localStorage:<key>'")
+        return value
+
+    @field_validator("page")
+    @classmethod
+    def _valid_page(cls, value: str) -> str:
+        if not value.startswith("/") or value.startswith("//") or "://" in value:
+            raise ValueError("data_auth.page must be a path on the base_url host")
+        return value
 
 
 class SessionConfig(BaseModel):
@@ -102,13 +155,20 @@ class ToolConfig(BaseModel):
     pick: list[str] | None = None  # keep only these dotted field paths in JSON responses
     # Write and binding tools
     body_schema: dict[str, Any] | None = None  # JSON Schema for the request body
-    body_encoding: Literal["json", "form"] = "json"
+    body_encoding: Literal["json", "form", "multipart"] = "json"
+    # multipart: body fields that are files. Their arguments are file paths inside the
+    # portal-mcp uploads directory.
+    file_fields: list[str] = Field(default_factory=list)
     body_constants: dict[str, Any] = Field(default_factory=dict)  # fixed fields, e.g. hidden form inputs
     summary: str | None = None  # confirmation text template, e.g. "Pay {amount} to {recipient}"
     limits: Limits = Field(default_factory=Limits)
     messaging: bool = False  # sends free text to other people: off unless enabled is true
     enabled: bool | None = None
     test_args: dict[str, Any] | None = None  # arguments self_test uses for read tools
+    # A declared data host to call instead of the base host, with the token from data_auth.
+    host: str | None = None
+    # A read or file tool that needs no login, in a service that otherwise does.
+    public: bool = False
 
     @property
     def exposed(self) -> bool:
@@ -147,6 +207,10 @@ class ToolConfig(BaseModel):
                 raise ValueError(f"write tool {self.name!r} cannot use GET")
             if self.method != "DELETE" and self.body_schema is None:
                 raise ValueError(f"write tool {self.name!r} needs body_schema")
+        if self.public and self.is_write:
+            raise ValueError(f"write tool {self.name!r} cannot be public")
+        if self.file_fields and self.body_encoding != "multipart":
+            raise ValueError(f"tool {self.name!r}: file_fields need body_encoding multipart")
         if self.kind == "binding" and self.limits.is_empty():
             raise ValueError(f"binding tool {self.name!r} needs limits, for example a maximum amount")
         if self.messaging and not self.is_write:
@@ -179,6 +243,8 @@ class Manifest(BaseModel):
     # After login, login hosts are blocked. "oidc" opens them only for the standard OpenID
     # Connect endpoints that the discovery document names, for apps that get their own token.
     login_hosts_after_login: Literal["blocked", "oidc"] = "blocked"
+    # The token tools on data hosts send. Needs data_hosts and a login.
+    data_auth: DataAuth | None = None
 
     @field_validator("login_hosts")
     @classmethod
@@ -256,6 +322,17 @@ class Manifest(BaseModel):
                     raise ValueError(f"a host cannot be in both {first} and {second}: {both}")
         if self.login_hosts_after_login == "oidc" and not self.login_hosts:
             raise ValueError("login_hosts_after_login: oidc needs at least one login host")
+        if self.data_auth is not None and (not self.data_hosts or not self.needs_login):
+            raise ValueError("data_auth needs data_hosts and a login")
+        for tool in self.tools:
+            if tool.host is None:
+                continue
+            if tool.host not in self.data_hosts:
+                raise ValueError(f"tool {tool.name!r}: host {tool.host!r} is not a declared data host")
+            if self.data_auth is None:
+                raise ValueError(f"tool {tool.name!r} calls a data host, which needs data_auth")
+            if tool.public:
+                raise ValueError(f"tool {tool.name!r} on a data host cannot be public")
         return self
 
 

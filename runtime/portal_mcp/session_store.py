@@ -29,6 +29,7 @@ class StoredSession:
     cookies: list[dict[str, str]] = field(default_factory=list)  # name, value, domain, path
     bearer: str | None = None
     csrf: str | None = None
+    data_token: str | None = None  # the app's token for data hosts (manifest data_auth)
     saved_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 

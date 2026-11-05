@@ -260,6 +260,7 @@ async def test_explore_clicks_safe_controls_and_never_actions(tmp_path, mock_bas
     assert "Show more" in controls and controls["Show more"]["json_reads"] >= 1
     # Actions, a form's submit button and an unlabeled button are never clicked.
     assert not {"Delete all", "Log out", "Next", ""} & set(controls)
+    assert sum(1 for c in controls if c == "(icon that expands)") == 1  # the plain empty button is skipped
     assert page["skipped"]["looks like an action"] >= 2
     assert page["skipped"]["submits a form"] == 1
     # A write caused by a click is captured, not sent.
@@ -267,6 +268,14 @@ async def test_explore_clicks_safe_controls_and_never_actions(tmp_path, mock_bas
     assert any(c["path"] == "/api/messages" for c in json.loads((out / "captured_writes.json").read_text()))
     # A click that leaves the page: the recorder came back and went on.
     assert controls["Go to invoices"]["left_page"] is True
+    # The cookie banner was declined first, and its accept button never clicked.
+    assert page["consent_banner"] == "declined"
+    assert "Acceptera alla" not in controls
+    # The search field was filled and submitted, and its JSON read recorded.
+    searches = json.loads((out / "explored.json").read_text())[0]["searches"]
+    assert page["searched"] == 1 and searches[0]["json_reads"] >= 1
+    # An icon toggle without a label is clicked because it expands.
+    assert controls["(icon that expands)"]["json_reads"] >= 1
 
     # Nothing reached the service: the invoice the delete button points at still exists.
     async with httpx.AsyncClient(base_url=mock_base_url) as client:
@@ -310,7 +319,68 @@ async def test_a_public_site_is_recorded_without_a_login(tmp_path, mock_base_url
     assert summary["error"] is None
     assert summary["public"] is True and summary["session_check"] is None
     # No login: the page itself has no session, so its writes are still captured, not sent.
-    assert summary["visited"] == [{"path": "/cases", "status": "ok"}]
+    assert summary["visited"] == [{"path": "/cases", "status": "ok", "depth": 1}]
     assert summary["captured_writes"] >= 1
     marker = json.loads((out / "recording.json").read_text())
     assert marker["public"] is True
+
+
+async def test_the_apps_token_is_read_after_login_and_reported_by_name(tmp_path, mock_base_url, monkeypatch):
+    from playwright.async_api import async_playwright
+
+    import record
+
+    from portal_mcp.login.local import _launch, read_data_token
+    from portal_mcp.manifest import Manifest, load_manifest_file
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("PORTAL_MCP_HOME", str(home))
+    monkeypatch.setenv("PORTAL_MCP_HEADLESS", "1")
+    manifest = Manifest.model_validate({
+        "name": "withapp", "base_url": mock_base_url, "login_url": mock_base_url + "/login",
+        "session": {"type": "cookies", "check": "/api/session"}, "data_hosts": ["api.example.net"],
+        "data_auth": {"source": "sessionStorage:oidc.user:*", "field": "access_token", "page": "/app"},
+    })
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    async with async_playwright() as p:
+        context = await _launch(p, profile, True)
+        page = context.pages[0] if context.pages else await context.new_page()
+        assert await read_data_token(page, manifest, timeout=10, poll=0.2) == "app-token-1"
+        await context.close()
+
+    # The recorder reports where the token is kept, by key name and JSON fields, never the value.
+    manifest_path = write_manifest(home / "services", "mockportal", mock_manifest_yaml(mock_base_url))
+    await _seed_login(home / "profiles" / "mockportal" / "default", mock_base_url)
+    out = tmp_path / "rec"
+    summary = await record.record(load_manifest_file(manifest_path), ["/app"], out, timeout=30,
+                                  profile="default", reuse_profile=True)
+    entry = next(t for t in summary["token_storage"] if t["source"].startswith("sessionStorage:oidc.user:"))
+    assert "access_token" in entry["json_fields"]
+    assert "app-token-1" not in json.dumps(summary)
+
+
+async def test_links_on_visited_pages_are_followed_up_to_the_cap(tmp_path, mock_base_url, monkeypatch):
+    import record
+
+    from portal_mcp.manifest import load_manifest_file
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("PORTAL_MCP_HOME", str(home))
+    monkeypatch.setenv("PORTAL_MCP_HEADLESS", "1")
+    manifest_path = write_manifest(home / "services", "mockportal", mock_manifest_yaml(mock_base_url))
+    await _seed_login(home / "profiles" / "mockportal" / "default", mock_base_url)
+
+    summary = await record.record(load_manifest_file(manifest_path), ["/"], tmp_path / "deep", timeout=30,
+                                  profile="default", reuse_profile=True, depth=2)
+    visited = {v["path"]: v for v in summary["visited"]}
+    assert visited["/"]["depth"] == 1
+    assert visited["/invoices-page"]["depth"] == 2 and visited["/profile?tab=1"]["depth"] == 2
+    assert not any("logout" in p or "delete" in p or p.endswith(".pdf") for p in visited)
+    assert summary["links_followed"] >= 3
+
+    capped = await record.record(load_manifest_file(manifest_path), ["/"], tmp_path / "capped", timeout=30,
+                                 profile="default", reuse_profile=True, depth=2, max_pages=2)
+    statuses = [v["status"] for v in capped["visited"]]
+    assert statuses.count("ok") + sum(s.startswith("error") for s in statuses) == 2
+    assert "skipped: max_pages" in statuses

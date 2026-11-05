@@ -120,7 +120,8 @@ def _short(value: Any, limit: int = 300) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def build_summary(service: str, tool: ToolConfig, arguments: dict[str, Any], profile: str) -> str:
+def build_summary(service: str, tool: ToolConfig, arguments: dict[str, Any], profile: str,
+                  *, files: dict[str, str] | None = None) -> str:
     """The text a person approves. Built by the runtime from the real arguments."""
     if tool.summary:
         headline = _PLACEHOLDER.sub(lambda m: _short(arguments.get(m.group(1), "<missing>"), 120), tool.summary)
@@ -130,12 +131,15 @@ def build_summary(service: str, tool: ToolConfig, arguments: dict[str, Any], pro
         headline,
         "",
         f"Service: {service} (profile {profile})",
-        f"Request: {tool.method} {tool.path}",
+        f"Request: {tool.method} {('https://' + tool.host) if tool.host else ''}{tool.path}",
         f"Kind: {tool.kind}",
     ]
     if arguments:
         lines.append("Values:")
         lines.extend(f"  {key}: {_short(value)}" for key, value in sorted(arguments.items()))
+    if files:
+        lines.append("Files sent:")
+        lines.extend(f"  {key}: {value}" for key, value in sorted(files.items()))
     if tool.body_constants:
         lines.append("Fixed values:")
         lines.extend(f"  {key}: {_short(value)}" for key, value in sorted(tool.body_constants.items()))

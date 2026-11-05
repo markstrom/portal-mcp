@@ -25,11 +25,17 @@ def test_tabs_and_sections_are_safe():
     assert skip_reason(control("Logga in")) is None  # an app's own sign-in that gets a token
     assert skip_reason(control("More", tag="summary", type="")) is None
     assert skip_reason(control("Details", tag="a", href="#details")) is None
+    # Words that mostly show something are no longer taken for actions.
+    for text in ("Order", "Ordrar", "Download", "Ladda ner", "Report", "Rapporter"):
+        assert skip_reason(control(text)) is None, text
+    # An icon without a label is clicked only when it expands or switches content.
+    assert skip_reason(control("", expands=True)) is None
 
 
 def test_actions_are_never_clicked():
     for text in ("Log out", "Logga ut", "Delete all", "Ta bort", "Betala", "Skicka", "Spara",
-                 "Bekräfta", "Godkänn", "Avbryt", "Cancel", "Pay now", "Send message", "OK", "Ja"):
+                 "Bekräfta", "Godkänn", "Avbryt", "Cancel", "Pay now", "Send message", "OK", "Ja",
+                 "Place order", "Beställ", "Köp", "Print", "Dela"):
         assert skip_reason(control(text)) == "looks like an action", text
 
 
@@ -51,3 +57,15 @@ def test_each_control_is_picked_once():
     assert skipped == {"button|Delete": "looks like an action"}
     safe, _ = pick_controls(raw, {"button|Show more"})
     assert safe == []
+
+
+def test_search_fields_are_found_by_type_role_or_name():
+    from explore import search_fields
+
+    raw = [
+        {"id": "0", "type": "search", "role": "", "hint": ""},
+        {"id": "1", "type": "text", "role": "", "hint": "q  Sök på namn"},
+        {"id": "2", "type": "text", "role": "", "hint": "email Your e-mail"},
+        {"id": "3", "type": "text", "role": "searchbox", "hint": ""},
+    ]
+    assert [f["id"] for f in search_fields(raw)] == ["0", "1", "3"]

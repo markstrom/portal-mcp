@@ -28,6 +28,8 @@ import re
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
+from portal_mcp.diagnostics import is_consent_host
+
 # Path segments that suggest a side effect even on GET. Matched case-insensitively
 # against each segment, split on "/", "-", "_" and ".".
 SIDE_EFFECT_WORDS = {
@@ -109,6 +111,12 @@ def decide(
     parts = urlsplit(url)
     host = (parts.hostname or "").lower()
     if host != service_host.lower():
+        if host and is_consent_host(host):
+            # Cookie banners may load, so pages that wait for them show their content.
+            # Writes (such as logging a consent) stay blocked; the recorder declines the banner.
+            if parts.scheme == "https" and method.upper() == "GET":
+                return Decision(True, f"consent manager {host}: GET")
+            return Decision(False, f"consent manager {host}: GET over https only")
         if host and host in {h.lower() for h in data_hosts}:
             if parts.scheme != "https":
                 return Decision(False, f"data host {host} needs https")

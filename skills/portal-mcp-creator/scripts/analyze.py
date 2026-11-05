@@ -149,6 +149,7 @@ TOKEN_WORDS = ("csrf", "xsrf", "token", "authenticity", "nonce", "signature", "_
 
 def _body_fields(content_type: str, body: str) -> tuple[str, dict]:
     """Return (encoding, {field: value}) for a captured body."""
+    original = content_type  # the multipart boundary is case-sensitive
     content_type = content_type.lower()
     if "json" in content_type:
         try:
@@ -166,8 +167,30 @@ def _body_fields(content_type: str, body: str) -> tuple[str, dict]:
                 fields[name] = value
         return "form", fields
     if "multipart" in content_type:
-        return "multipart", {}
+        return "multipart", _multipart_fields(original, body)
     return content_type or "none", {}
+
+
+_DISPOSITION = re.compile(r'name="([^"]*)"(?:;\s*filename="([^"]*)")?', re.IGNORECASE)
+FILE_MARK = "<file>"
+
+
+def _multipart_fields(content_type: str, body: str) -> dict:
+    """Text fields with their values, and file fields marked as files (their content is never kept)."""
+    match = re.search(r"boundary=\"?([^\";]+)\"?", content_type, re.IGNORECASE)
+    if not match or not body:
+        return {}
+    fields: dict = {}
+    for part in body.split("--" + match.group(1)):
+        head, _, value = part.partition("\r\n\r\n")
+        if not _:
+            head, _, value = part.partition("\n\n")
+        found = _DISPOSITION.search(head)
+        if not found:
+            continue
+        name, filename = found.group(1), found.group(2)
+        fields[name] = FILE_MARK if filename is not None else value.rstrip("\r\n")
+    return fields
 
 
 def _form_type(value) -> str:
@@ -208,7 +231,10 @@ def analyze_writes(captured: list[dict], host: str, show_values_for: set[str] | 
         if item.get("page"):
             group["pages"].add(item["page"])
         for name, value in fields.items():
-            group["fields"].setdefault(name, _form_type(value) if encoding == "form" else schema_of(value))
+            if value == FILE_MARK:
+                group["fields"].setdefault(name, "file")
+                continue
+            group["fields"].setdefault(name, _form_type(value) if encoding in ("form", "multipart") else schema_of(value))
             if name in show_values_for:
                 group["values"].setdefault(name, value)
 
@@ -229,6 +255,7 @@ def analyze_writes(captured: list[dict], host: str, show_values_for: set[str] | 
             "path": template,
             "encoding": group["encoding"],
             "fields": group["fields"],
+            "file_fields": sorted(n for n, t in group["fields"].items() if t == "file"),
             "present_in_every_capture": sorted(always),
             "token_fields": tokens,
             "messaging_hints": messaging,

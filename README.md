@@ -1,6 +1,6 @@
 # portal-mcp
 
-[![Version](https://img.shields.io/badge/version-0.9.2-blue)](https://github.com/markstrom/portal-mcp/releases)
+[![Version](https://img.shields.io/badge/version-0.9.3-blue)](https://github.com/markstrom/portal-mcp/releases)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](pyproject.toml)
 [![MCP](https://img.shields.io/badge/MCP-server-8A2BE2)](https://modelcontextprotocol.io)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
@@ -15,7 +15,7 @@
 - Write actions run in two steps and only after you approve them yourself, in a dialog or a local confirmation page. The model cannot approve its own actions.
 - Every write action is logged in a local audit log.
 
-**Status: version 0.9.2.** Runtime with read, file, write and binding tools and human approval; logins through other hosts, BankID and OpenID Connect apps; public sites without login; encrypted sessions and several profiles per service; a recorder that explores pages by itself and captures writes without sending them; `self_test`, desktop notifications, the `portal-mcp-creator` skill and the slash commands. Tested against a local mock service.
+**Status: version 0.9.3.** Runtime with read, file, write and binding tools and human approval; logins through other hosts, BankID and OpenID Connect apps; data hosts called with the app's own token; file uploads; public sites without login; encrypted sessions and several profiles per service; a recorder that explores pages by itself and captures writes without sending them; `self_test`, desktop notifications, the `portal-mcp-creator` skill and the slash commands. Tested against a local mock service.
 
 ## Requirements
 
@@ -232,6 +232,7 @@ Data is kept outside the plugin, so updates never remove it. The location follow
   profiles/<service>/<profile>/  browser profiles
   sessions/                   encrypted sessions
   recordings/                 temporary recordings, deleted after a manifest is written
+  uploads/                    files that upload tools may send (nothing else can be uploaded)
   audit.log                   every write action: time, service, tool, call and response
 ```
 
@@ -252,14 +253,20 @@ profiles: [default]
 session:
   type: cookies               # cookies | bearer
   bearer_source: null         # for bearer: "localStorage:<key>" or "sessionStorage:<key>"
-  csrf:
-    header: x-csrf-token
-    from_cookie: csrf
+  csrf:                       # optional
+    header: x-csrf-token      # send the token in this header, and/or
+    body_field: null          # put it in this body field
+    from_cookie: csrf         # take it from this cookie, or
+    from_page: null           # from a page: {path: /form, name: <hidden input or meta name>}
   check: /api/session         # 200 = logged in, 401 = not logged in
   logout: /api/logout         # optional, called with POST
 login_hosts: [login.example.com]  # optional: other hosts the login goes through
 data_hosts: [api.example.net]     # optional: APIs on other hosts the pages load data from
 asset_hosts: [cdn.example.net]    # optional: CDNs for scripts, styles, fonts and images
+data_auth:                        # optional: the token tools on data hosts send
+  source: "sessionStorage:oidc.user:*"  # where the service's own app keeps it ("*" matches anything)
+  field: access_token             # a field of a JSON value, if the value is JSON
+  page: /cases                    # a page that makes the app get its token
 login_hosts_after_login: blocked  # or oidc: login host open after login for OIDC endpoints only
 rate_limit_per_minute: 30
 cache_seconds: 30             # caches read results
@@ -348,7 +355,11 @@ When the creator skill records a service, every recording starts with a clean, t
 
 Some pages are single-page apps that run their own OpenID Connect client after the login: they load a library from a CDN and get their own token from the login host. Declare the CDN in `asset_hosts` (static files only: scripts, styles, fonts, images) and set `login_hosts_after_login: oidc` to keep the login host open after login for the endpoints its discovery document names (POST only to the token endpoint, never the logout endpoint). Both are off by default. The analyzer refuses recordings whose login was not verified, unless `--allow-unverified` is given.
 
-Some services load their data from an API on another host. List such hosts in `data_hosts`. When recording, a data host is allowed for GET over https, and writes to it are captured, not sent, just like the service's own host. It never gets the saved session. Runtime tools that call a data host are not supported yet; the recording shows how the data host authenticates (header names and schemes only), as groundwork for that.
+Some services load their data from an API on another host. List such hosts in `data_hosts`. When recording, a data host is allowed for GET over https, and writes to it are captured, not sent, just like the service's own host. It never gets the service's cookies. Tools can call a data host when the service's own app authenticates to it with a token: `data_auth` says where the app keeps that token after login, the runtime opens `data_auth.page` after you log in, reads the token, stores it encrypted with the session, and sends it as `Authorization: Bearer` only to declared data hosts, for tools with `host` set. The recording reports which storage keys hold tokens (key names only) so the skill can fill this in.
+
+Other tool options: `public: true` makes a read or file tool call the site without the session and never open a login, for public pages in a service that otherwise needs one. `body_encoding: multipart` with `file_fields` uploads files; a file argument must be a file in the `uploads` folder of the data directory, and the approval shows each file's name and size. File tools may download up to 200 MB; other answers are limited to 10 MB.
+
+While recording, consent managers (cookie banners) may load with GET, so pages that wait for them show their content, and exploring declines the banner; analytics and advertising stay blocked.
 
 Many services log in through another host, for example an identity provider or an account service on its own address. List such hosts in `login_hosts`, as plain host names. When the creator skill records a service, a login host is allowed only while you log in, only over https, and is blocked after login. The saved session only ever holds cookies for the `base_url` host. Hosts are never added automatically: if a recording is stopped by an unknown host, the skill asks you whether you trust it.
 

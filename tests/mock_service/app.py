@@ -18,6 +18,7 @@ Endpoints:
   GET  /reports/new            page that posts a JSON report on load (write capture test)
   GET  /payments/new           HTML form that submits a payment on load (write capture test)
   GET  /cases                  page whose data loads only after a click on a tab (explore test)
+  GET  /app                    page whose app stores a token in sessionStorage (data_auth test)
 """
 
 from __future__ import annotations
@@ -188,6 +189,8 @@ def create_app() -> Starlette:
         # ones the recorder must never click, or that cause a write that must be captured.
         return HTMLResponse(
             "<!doctype html><title>Cases</title>"
+            '<div id="banner"><button type="button" id="all">Acceptera alla</button>'
+            '<button type="button" id="nec">Endast nödvändiga</button></div>'
             '<div role="tablist"><button type="button" role="tab" id="open">Open cases</button></div>'
             '<details><summary>More</summary><button type="button" id="more">Show more</button></details>'
             '<button type="button" id="del">Delete all</button>'
@@ -196,6 +199,8 @@ def create_app() -> Starlette:
             '<button type="button" id="away">Go to invoices</button>'
             '<form action="/api/payments" method="post"><input name="amount" value="1"><button>Next</button></form>'
             '<button type="button" aria-label=""></button>'
+            '<button type="button" id="chev" aria-expanded="false"><svg width="8" height="8"></svg></button>'
+            '<form id="search" role="search"><input type="search" name="q" placeholder="Search"></form>'
             "<script>"
             "window.hits = [];"
             "const hit = (n) => { window.hits.push(n); document.title = window.hits.join(','); };"
@@ -204,7 +209,21 @@ def create_app() -> Starlette:
             "document.getElementById('del').onclick = () => { hit('del'); fetch('/api/invoices/inv-002/delete'); };"
             "document.getElementById('out').onclick = () => { hit('out'); };"
             "document.getElementById('mark').onclick = () => { hit('mark'); fetch('/api/messages', {method: 'POST', body: '{}'}); };"
+            "document.getElementById('all').onclick = () => { hit('accepted'); };"
+            "document.getElementById('nec').onclick = () => { hit('declined'); document.getElementById('banner').remove(); };"
+            "document.getElementById('chev').onclick = () => { hit('chev'); fetch('/api/public-info'); };"
+            "document.getElementById('search').onsubmit = (e) => { e.preventDefault();"
+            " fetch('/api/invoices?page=1&q=' + encodeURIComponent(e.target.q.value)); };"
             "document.getElementById('away').onclick = () => { location.href = '/invoices-page'; };"
+            "</script>"
+        )
+
+    async def app_page(request: Request) -> Response:
+        # Like an app that gets its own token after the login and keeps it in sessionStorage.
+        return HTMLResponse(
+            "<!doctype html><title>App</title><script>"
+            "setTimeout(() => sessionStorage.setItem('oidc.user:https://id.example.com:app',"
+            " JSON.stringify({access_token: 'app-token-1', token_type: 'Bearer'})), 300);"
             "</script>"
         )
 
@@ -223,6 +242,7 @@ def create_app() -> Starlette:
             Route("/reports/new", report_form, methods=["GET"]),
             Route("/payments/new", payment_form, methods=["GET"]),
             Route("/cases", cases_page, methods=["GET"]),
+            Route("/app", app_page, methods=["GET"]),
             Route("/login", login_submit, methods=["POST"]),
             Route("/api/session", session_check, methods=["GET"]),
             Route("/account", page_check, methods=["GET"]),

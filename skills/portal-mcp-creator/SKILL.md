@@ -43,7 +43,7 @@ This looks for public API docs (OpenAPI/Swagger) and extracts endpoint candidate
 - Both: ask the user one question, and only this one: "Do you want to use what <service> shows to everyone, what you see after logging in, or both?" Public means `session: {type: none}`. Logged in or both means the logged-in mode; the recording then visits the public pages too, but every tool needs the login.
 - If the user already said which they want, do not ask.
 
-**Public sites.** The plugin reads only what anyone can see in a browser. Suggest a low rate limit (10 per minute) and caching of reads (for example `cache_seconds: 300`).
+**Public sites.** The plugin reads only what anyone can see in a browser. Suggest the usual rate limit (30 per minute) and caching of reads (for example `cache_seconds: 300`), so repeated searches do not call the site again.
 
 ### 3. Static analysis
 Use the `endpoints` in `recon.json` as hints for paths, methods and fields. Endpoints found with POST, PUT, PATCH or DELETE are write candidates for step 6.
@@ -64,18 +64,20 @@ What happens, and what to tell the user:
 1. **Preflight.** The session check is called without cookies. If it answers 200 even when logged out, the run stops: the check cannot verify a login. Find a better check (step 10) before going on. If it redirects, the run warns and continues; only a 200 counts as logged in.
 2. **Clean profile.** Every run uses a clean, temporary browser profile that is deleted afterwards. Use `--reuse-profile` only when the user explicitly asks to keep an earlier login.
 3. **Login.** Status lines on stderr say when the browser starts and when the window is open. Tell the user to log in in the window (BankID, password or SSO). The run waits up to 10 minutes. If the browser does not start, or the login is not verified in time, the summary's `error` says why (for example what the check answered). Report it as written.
-4. **Menu links, only after "Login verified".** The run writes `<recording dir>/menu_links.json`: links on the service's start page that stay on the service's host and look like reading. Logout, delete and similar links and file downloads are left out. Do not wait for the user to pick pages: write the links with `in_menu: true` first, then the others, at most 40 paths, as a JSON list to `<recording dir>/visit.json`, and tell the user in one line how many pages are being visited and explored. If the user named functions, put the pages that match them first. If the user wants to name or narrow the pages, use their list instead. The run refuses any path that looks like a side effect.
-5. **Exploring, with `--explore`.** On each visited page the run clicks the page's safe controls itself, one at a time: tabs, expandable sections, "show more" and similar buttons, and an app's own sign-in button. Many single-page apps load their data only after such a click. Controls that mean an action (log out, delete, cancel, pay, send, save, confirm, approve, order, book and their Swedish equivalents), submit buttons, unlabeled controls, downloads and links to other pages are never clicked, and the guard still blocks and captures every write a click causes. The summary's `explored` lists per page how many controls were clicked and skipped, and how many requests, JSON reads and data-host requests the clicks caused; `<recording dir>/explored.json` has the texts of the clicked controls. Use `--explore` by default; interactive mode (step 6) is only for forms the user wants to fill in.
+4. **Menu links, only after "Login verified".** The run writes `<recording dir>/menu_links.json`: links on the service's start page that stay on the service's host and look like reading. Logout, delete and similar links and file downloads are left out. Do not wait for the user to pick pages: write all the links, those with `in_menu: true` first, as a JSON list to `<recording dir>/visit.json`, and tell the user in one line that the pages are being visited and explored. With `--discover`, links found on the visited pages are followed one level further (`--depth 2`, same filters), up to `--max-pages` (100) in all; the summary lists each page with its `depth` and counts `links_followed`. For a large portal, raise `--depth` or `--max-pages` if the user wants more. If the user named functions, put the pages that match them first. If the user wants to name or narrow the pages, use their list instead. The run refuses any path that looks like a side effect.
+5. **Exploring, with `--explore`.** On each visited page the run first answers a cookie banner with its decline or necessary-only choice (never accept). Then it fills each search field with a probe text (`--search-text`, default `test`; pick a word that makes sense for the site, for example a common name for a people search) and submits it, so search endpoints are recorded. Then it clicks the page's safe controls itself, one at a time: tabs, expandable sections and icon toggles (`aria-expanded`), "show more" and similar buttons, and an app's own sign-in button. Many single-page apps load their data only after such a click. Controls that mean an action (log out, delete, cancel, pay, send, save, confirm, approve, place order, buy, book, print, share and their Swedish equivalents), submit buttons, unlabeled controls that do not expand anything, and links to other pages are never clicked, and the guard still blocks and captures every write a click or search causes. Files a click downloads are counted, not kept. The summary's `explored` lists per page whether a banner was declined, how many searches were made, how many controls were clicked and skipped, and how many requests, JSON reads, data-host requests and downloads they caused; `<recording dir>/explored.json` has the details. Use `--explore` by default; interactive mode (step 6) is only for forms the user wants to fill in.
 
 When the run ends, it prints a JSON summary:
 - `login_verified`, `session_check` (what the check answered when logged out), `profile`.
-- `blocked_tracking`: third-party tracking, analytics, monitoring and consent hosts. Blocking them is expected; mention them only briefly.
+- `blocked_tracking`: third-party tracking, analytics and monitoring hosts. Blocking them is expected; mention them only briefly.
+- `consent_hosts_used`: cookie-banner hosts (consent managers) that were allowed to load, GET only, so pages that wait for the banner show their content. They can never be declared in a manifest.
 - `blocked_other`: other blocked requests, with host and reason. These may be needed by the service (for example a content host). Show them to the user. If a read function needs one, say so and ask how to proceed. Do not lift the guard.
 - Data that does not load: if `blocked_other` shows requests to a host that is "not declared", and pages or forms the user needs stay empty, the service probably loads its data from that host. Tell the user the host name exactly as reported, and ask whether they trust it with data from the service. Only on a clear yes, add it to `data_hosts` and run again.
 - Apps with their own login after the login: some pages are single-page apps that load an OpenID Connect library from a CDN and then get their own token from the login host. Signs: `blocked_other` shows a script from an undeclared host (for example an `oidc-client` library), and the login host is blocked after login on `/.well-known/openid-configuration`. Then the app never loads its data. Explain this to the user and ask two separate questions:
   1. Do they trust the CDN host to serve files to the browser? On a clear yes, add it to `asset_hosts` (scripts, styles, fonts and images only; never data, navigation or writes).
   2. May the login host stay open after login for the standard OpenID Connect endpoints only? On a clear yes, set `login_hosts_after_login: oidc`. Only the endpoints that the login host's discovery document names are opened (POST only to its token endpoint, never its logout endpoint); everything else on it stays blocked. The summary's `oidc_after_login` lists what was used.
-- `data_host_auth`: for each data host, how its requests authenticate: the `Authorization` scheme (for example `Bearer`), whether cookies were sent, and other auth header names. Names only, never values. Note it for the user. Tools that call a data host at runtime are not supported yet, so keep tools on the service's own host and list data-host functions as "found, not supported yet" in the catalog.
+- `data_host_auth`: for each data host, how its requests authenticate: the `Authorization` scheme (for example `Bearer`), whether cookies were sent, and other auth header names. Names only, never values. Note it for the user.
+- `token_storage`: storage keys where the pages' apps keep tokens (for example `sessionStorage:oidc.user:<issuer>:<client>`), with the field names of JSON values and whether a value looks like a JWT. Key names only, never values. When a data host is called with `Bearer` and a key here holds an `access_token`, the data host's tools can work at runtime: set `data_auth` (step 10) with that key as `source` (use `*` for the parts that vary, for example `sessionStorage:oidc.user:*`), `field: access_token`, and as `page` a page that made the app get its token (one where the data host was called). Tell the user that the service's own app token is then stored encrypted with the session and sent only to the declared data hosts, never the cookies.
 - `blocked_navigation_hosts`: hosts that pages tried to navigate to. If the login could not finish and a host is listed here, the service probably logs in through it. Tell the user the host name exactly as reported and ask whether they recognize and trust it as the service's login. Only on a clear yes, add it to `login_hosts` and run again. A host the user does not recognize stays blocked.
 - `header_too_large`: set when the service rejected the request because its headers (cookies) were too large. It shows the cookies for the service's host by name pattern and count, never values. Tell the user that, and run again with a clean profile (the default). For the runtime, `forget_session` with `browser_profile: true` gives the next login a clean profile.
 
@@ -122,8 +124,8 @@ With `--service` (or `--manifest`), the hosts come from the manifest: the servic
 The catalog holds structure only: path templates, query parameter names, pagination hints, response and body field names with types, and flags. Values are hidden. The analysis deletes the HAR file when it is done, because it holds cookies and page content; add `--keep-har` only if you must analyze it again. For fixed fields (hidden inputs such as a form type), you may show their values with `--show-values-for field1,field2` after checking that they are not personal data or tokens.
 
 For writes, look at:
-- `encoding`: `json` or `form` (sets `body_encoding`). `multipart` is not supported in this version.
-- `token_fields`: CSRF or similar tokens in the body. These must not become fixed values. If a service needs a token in the body rather than a header, tell the user this version cannot handle it.
+- `encoding`: `json`, `form` or `multipart` (sets `body_encoding`). For `multipart`, `file_fields` lists the fields that carried files; put them in the tool's `file_fields`. File arguments are file names in the portal-mcp `uploads` directory (in the data directory); tell the user to put files there, because the runtime refuses any other path, and the approval shows each file's name and size.
+- `token_fields`: CSRF or similar tokens in the body. These must not become fixed values. Use `session.csrf` with `body_field` set to the field name. If the token is also in a cookie, use `from_cookie`; if it is a hidden input or meta tag on the form page, use `from_page: {path: <form page>, name: <input or meta name>}`, and the runtime reads a fresh token from that page before each write.
 - `present_in_every_capture`: candidates for `required`.
 - `binding_hints` and `messaging_hints`: candidates for `binding` and `messaging`.
 
@@ -149,13 +151,18 @@ login_url: https://<host>/<login path>
 profiles: [default]
 session:
   type: cookies                 # or bearer, with bearer_source "localStorage:<key>"
-  csrf: {header: <header>, from_cookie: <cookie>}   # only if the site needs it
+  csrf: {header: <header>, from_cookie: <cookie>}   # only if the site needs it; or
+  #   from_page: {path: <form page>, name: <hidden input or meta name>} and/or body_field: <field>
   check: <path that returns 200 when logged in and 401 otherwise>
   logout: <path>                # optional
 login_hosts: [<host>]           # only hosts the user approved; plain host names, https only
 data_hosts: [<host>]            # APIs on other hosts the pages load data from; only if the user approved
 asset_hosts: [<host>]           # CDNs for scripts/styles/fonts/images; only if the user approved
 login_hosts_after_login: blocked  # or oidc, only if the user approved (apps with their own token)
+data_auth:                      # only for tools on data hosts; from token_storage in the recording
+  source: "sessionStorage:oidc.user:*"
+  field: access_token
+  page: /<page where the app gets its token>
 rate_limit_per_minute: 30
 cache_seconds: 0
 redact: [<dotted paths, e.g. items.owner.national_id>]
@@ -170,6 +177,16 @@ tools:
       properties:
         page: {type: integer}
     pick: [items.id, items.date, items.amount, items.status]
+  - name: list_cases              # a tool on a data host: needs data_auth
+    kind: read
+    description: <written by you>
+    host: <data host>
+    path: /api/cases
+  - name: opening_hours           # needs no login, in a service that otherwise does
+    kind: read
+    description: <written by you>
+    path: /api/opening-hours
+    public: true
   - name: download_invoice_pdf
     kind: file
     description: <written by you>
