@@ -1,5 +1,6 @@
 # portal-mcp
 
+[![Tests](https://github.com/markstrom/portal-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/markstrom/portal-mcp/actions/workflows/tests.yml)
 [![Version](https://img.shields.io/badge/version-0.9.3-blue)](https://github.com/markstrom/portal-mcp/releases)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](pyproject.toml)
 [![MCP](https://img.shields.io/badge/MCP-server-8A2BE2)](https://modelcontextprotocol.io)
