@@ -97,9 +97,10 @@ Real writes still go to the service's own host only, and side-effect GET links s
 ### 7. Analysis
 ```bash
 uv run --project "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/skills/portal-mcp-creator/scripts/analyze.py" \
-  <recording dir>/recording.har --host <host> --writes <recording dir>/captured_writes.json \
-  [--data-host <data host> ...] > catalog.json
+  <recording dir>/recording.har --service <name> --writes <recording dir>/captured_writes.json > catalog.json
 ```
+With `--service` (or `--manifest`), the hosts come from the manifest: the service's host and every data host are analyzed, each in its own pass, and every entry is marked with its `host`. Login hosts are never analyzed as data sources. The `hosts` section says, per host, how many requests and JSON reads it had and whether it was `ok`, `empty` (with the reason) or `failed`. Tell the user about every host that came out `empty` or `failed`; an empty data host usually means the pages that use it were not visited, or that it is only used after a click. If a host failed, the HAR is kept so the analysis can run again.
+
 The catalog holds structure only: path templates, query parameter names, pagination hints, response and body field names with types, and flags. Values are hidden. The analysis deletes the HAR file when it is done, because it holds cookies and page content; add `--keep-har` only if you must analyze it again. For fixed fields (hidden inputs such as a form type), you may show their values with `--show-values-for field1,field2` after checking that they are not personal data or tokens.
 
 For writes, look at:

@@ -247,35 +247,145 @@ def suggest_name(template: str) -> str:
     return re.sub(r"_+", "_", name).strip("_")
 
 
-def main(argv: list[str] | None = None) -> None:
+class HostAnalysisFailed(RuntimeError):
+    pass
+
+
+def _host_stats(har: dict, host: str) -> dict:
+    requests = json_reads = 0
+    for entry in har.get("log", {}).get("entries", []):
+        request = entry.get("request", {})
+        if (urlsplit(request.get("url", "")).hostname or "").lower() != host:
+            continue
+        requests += 1
+        response = entry.get("response", {})
+        mime = (response.get("content", {}).get("mimeType") or "").lower()
+        if request.get("method", "").upper() == "GET" and response.get("status") == 200 and "json" in mime:
+            json_reads += 1
+    return {"requests": requests, "json_reads": json_reads}
+
+
+def analyze_hosts(
+    har: dict,
+    service_host: str,
+    data_hosts: tuple[str, ...] | list[str] = (),
+    login_hosts: tuple[str, ...] | list[str] = (),
+    *,
+    analyze_one=None,
+) -> dict:
+    """One pass per declared host (the service's host and each data host).
+
+    Login hosts are never data sources: their requests are only counted. Every catalog entry
+    is marked with its host, and a `hosts` section says how each pass went.
+    """
+    analyze_one = analyze_one or (lambda h: analyze(har, h))
+    service_host = service_host.lower()
+    plan = [(service_host, "service")] + [(h.lower(), "data") for h in data_hosts]
+    tools: list[dict] = []
+    hosts: list[dict] = []
+    skipped: dict[str, int] = {}
+    for host, role in plan:
+        report = {"host": host, "role": role, **_host_stats(har, host)}
+        try:
+            result = analyze_one(host)
+        except Exception as exc:  # one host failing must not hide the others
+            report.update(status="failed", error=type(exc).__name__, tools_found=0)
+            hosts.append(report)
+            continue
+        for tool in result["tools"]:
+            tool["host"] = host
+            tool["data_host"] = role == "data"
+        tools.extend(result["tools"])
+        if role == "service":
+            skipped = dict(result["skipped"])
+        report["tools_found"] = len(result["tools"])
+        if result["tools"]:
+            report["status"] = "ok"
+        elif report["requests"] == 0:
+            report.update(status="empty", reason="no requests to this host in the recording")
+        elif report["json_reads"] == 0:
+            report.update(status="empty", reason="requests, but no JSON GET answers with status 200")
+        else:
+            report.update(status="empty", reason="JSON reads, but all of them were filtered out (see skipped)")
+        hosts.append(report)
+
+    # Requests to login hosts and data hosts are not "other host" for the service's pass.
+    declared = {h.lower() for h in data_hosts}
+    login = {h.lower() for h in login_hosts}
+    login_requests = sum(_host_stats(har, h)["requests"] for h in login)
+    data_requests = sum(_host_stats(har, h)["requests"] for h in declared)
+    if "other host" in skipped:
+        skipped["other host"] = max(skipped["other host"] - login_requests - data_requests, 0)
+        if not skipped["other host"]:
+            del skipped["other host"]
+    if login_requests:
+        skipped["login host (never a data source)"] = login_requests
+    for h in sorted(login):
+        hosts.append({"host": h, "role": "login", **_host_stats(har, h), "status": "not analyzed",
+                      "reason": "login hosts are used only for logging in", "tools_found": 0})
+    return {"host": service_host, "hosts": hosts, "tools": tools, "skipped": skipped,
+            "failed_hosts": [r["host"] for r in hosts if r["status"] == "failed"]}
+
+
+def _hosts_from_manifest(args) -> tuple[str, list[str], list[str]] | None:
+    if not (args.manifest or args.service):
+        return None
+    from portal_mcp.config import default_paths
+    from portal_mcp.manifest import load_manifest_file
+
+    path = args.manifest or (default_paths().services / f"{args.service}.yaml")
+    manifest = load_manifest_file(path)
+    return (urlsplit(manifest.base_url).hostname or "").lower(), list(manifest.data_hosts), list(manifest.login_hosts)
+
+
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Build a candidate tool catalog from a HAR file.")
     parser.add_argument("har", type=Path)
-    parser.add_argument("--host", required=True, help="the service host, for example app.example.com")
+    parser.add_argument("--manifest", type=Path, help="manifest file; its base_url, data_hosts and login_hosts are used")
+    parser.add_argument("--service", help="service name, to find services/<name>.yaml")
+    parser.add_argument("--host", help="the service host, for example app.example.com (without a manifest)")
     parser.add_argument("--writes", type=Path, help="captured_writes.json from record.py")
     parser.add_argument("--data-host", action="append", default=[],
-                        help="a declared data host whose reads to include (repeatable)")
+                        help="a declared data host whose reads to include (repeatable; without a manifest)")
     parser.add_argument("--keep-har", action="store_true",
-                        help="keep the HAR file; by default it is deleted once the catalog is written")
+                        help="keep the HAR file; by default it is deleted once every host is analyzed")
     parser.add_argument(
         "--show-values-for",
         default="",
         help="comma-separated field names whose captured values may be shown (for fixed fields only)",
     )
     args = parser.parse_args(argv)
+    from_manifest = _hosts_from_manifest(args)
+    if from_manifest is None and not args.host:
+        parser.error("give --manifest, --service or --host")
     har = json.loads(args.har.read_text(encoding="utf-8"))
-    catalog = analyze(har, args.host, args.data_host)
+
+    failed: list[str] = []
+    if from_manifest is not None:
+        service_host, data_hosts, login_hosts = from_manifest
+        catalog = analyze_hosts(har, service_host, data_hosts, login_hosts)
+        failed = catalog["failed_hosts"]
+    else:
+        service_host = args.host
+        catalog = analyze(har, args.host, args.data_host)
     if args.writes:
         captured = json.loads(args.writes.read_text(encoding="utf-8"))
         shown = {n.strip() for n in args.show_values_for.split(",") if n.strip()}
-        catalog["writes"] = analyze_writes(captured, args.host, shown)
+        catalog["writes"] = analyze_writes(captured, service_host, shown)
     json.dump(catalog, sys.stdout, indent=2, ensure_ascii=False)
     sys.stdout.write("\n")
     sys.stdout.flush()
-    # The HAR holds cookies and page content. It is not needed once the catalog exists.
+
+    # The HAR holds cookies and page content. Delete it only when every host was analyzed.
+    if failed:
+        print(f"[portal-mcp] Analysis failed for {', '.join(failed)}; kept {args.har} so it can be analyzed again.",
+              file=sys.stderr)
+        return 1
     if not args.keep_har:
         args.har.unlink(missing_ok=True)
         print(f"[portal-mcp] Deleted {args.har} (it held cookies and page content).", file=sys.stderr)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
