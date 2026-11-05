@@ -215,6 +215,12 @@ sequenceDiagram
 
 The summary you approve is built by the runtime from the real values, not written by the model. Codes are one-time and expire after five minutes. Limits are checked when the action is prepared and again when it is confirmed.
 
+## Running it somewhere else
+
+By default the runtime runs on your own computer, started by Claude Code over stdio, with no network connection. It can also run on another computer of yours that has a desktop, reached through HTTP mode and an SSH tunnel; you then log in through screen sharing. A server without a desktop cannot show the login window, so only public sites can work there. HTTP mode has no authentication, so it must listen on `127.0.0.1` only.
+
+See [docs/remote.md](docs/remote.md) for the steps, the security rules and the known limits.
+
 ## Where your data lives
 
 Data is kept outside the plugin, so updates never remove it. The location follows your OS conventions (`platformdirs`):
