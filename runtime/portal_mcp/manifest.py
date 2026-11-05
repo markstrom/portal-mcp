@@ -143,6 +143,41 @@ class Limits(BaseModel):
         return not (self.max or self.min or self.allowed or self.max_length)
 
 
+class ExtractField(BaseModel):
+    """One named field of an HTML extraction recipe.
+
+    `select` is a CSS selector, relative to the page or to the enclosing item. Without
+    `fields`, the field is the element's text (or the value of `attr`); with `many`, a list
+    of them. With `fields`, each matching element becomes an object (a list, unless `many`
+    is false)."""
+
+    model_config = ConfigDict(extra="forbid")
+    select: str
+    attr: str | None = None
+    many: bool | None = None
+    fields: dict[str, ExtractField] | None = None
+
+    @model_validator(mode="after")
+    def _shape(self) -> ExtractField:
+        if not self.select.strip():
+            raise ValueError("extract: select must be a CSS selector")
+        if self.fields is not None and self.attr is not None:
+            raise ValueError("extract: a field with fields cannot also have attr")
+        if self.fields is not None and not self.fields:
+            raise ValueError("extract: fields must name at least one field")
+        return self
+
+
+class EmbeddedJson(BaseModel):
+    """JSON a page carries in a <script> tag, for example a framework's page data
+    (script#__NEXT_DATA__) or structured data (script[type='application/ld+json'])."""
+
+    model_config = ConfigDict(extra="forbid")
+    select: str  # CSS selector for the script tag
+    path: str | None = None  # dotted path into the JSON, e.g. "props.pageProps.result"
+    many: bool = False  # all matching tags, as a list
+
+
 class ToolConfig(BaseModel):
     name: str
     kind: ToolKind
@@ -169,6 +204,11 @@ class ToolConfig(BaseModel):
     host: str | None = None
     # A read or file tool that needs no login, in a service that otherwise does.
     public: bool = False
+    # Read tools on HTML pages: the answer is text/html, turned into JSON by `embedded`
+    # (JSON in a script tag) or `extract` (CSS selectors). Scripts are never run.
+    response: Literal["json", "html"] = "json"
+    embedded: EmbeddedJson | None = None
+    extract: dict[str, ExtractField] | None = None
 
     @property
     def exposed(self) -> bool:
@@ -207,6 +247,15 @@ class ToolConfig(BaseModel):
                 raise ValueError(f"write tool {self.name!r} cannot use GET")
             if self.method != "DELETE" and self.body_schema is None:
                 raise ValueError(f"write tool {self.name!r} needs body_schema")
+        if self.response == "html":
+            if self.kind != "read":
+                raise ValueError(f"tool {self.name!r}: response html is only for read tools")
+            if (self.embedded is None) == (self.extract is None):
+                raise ValueError(f"tool {self.name!r}: response html needs exactly one of embedded and extract")
+            if self.extract is not None and not self.extract:
+                raise ValueError(f"tool {self.name!r}: extract must name at least one field")
+        elif self.embedded is not None or self.extract is not None:
+            raise ValueError(f"tool {self.name!r}: embedded and extract need response: html")
         if self.public and self.is_write:
             raise ValueError(f"write tool {self.name!r} cannot be public")
         if self.file_fields and self.body_encoding != "multipart":

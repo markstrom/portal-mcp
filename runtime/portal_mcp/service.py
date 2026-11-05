@@ -296,7 +296,8 @@ class ServiceClient:
         async with self._http(session, tool) as client:
             try:
                 if tool.method == "GET":
-                    response = await client.request("GET", path, params=_query(args))
+                    accept = {"accept": "text/html,application/xhtml+xml;q=0.9,*/*;q=0.5"} if tool.response == "html" else None
+                    response = await client.request("GET", path, params=_query(args), headers=accept)
                 else:
                     body = {**tool.body_constants, **args}
                     csrf = self.manifest.session.csrf
@@ -334,6 +335,19 @@ class ServiceClient:
             )
         return response
 
+    def _from_html(self, tool: ToolConfig, response: httpx.Response, content_type: str) -> Any:
+        """Parse an HTML answer as data (no scripts run, nothing fetched) and return JSON."""
+        from .extract import ExtractError, embedded_json, extract
+
+        if "text/html" not in content_type and "application/xhtml+xml" not in content_type:
+            raise ServiceError(f"{self.name} did not return HTML for {tool.name} (got {content_type or 'no type'})")
+        try:
+            if tool.embedded is not None:
+                return embedded_json(response.text, tool.embedded, max_bytes=MAX_RESPONSE_BYTES)
+            return extract(response.text, tool.extract or {}, max_bytes=MAX_RESPONSE_BYTES)
+        except ExtractError as exc:
+            raise ServiceError(f"{self.name}: {exc}") from exc
+
     async def _csrf_from_page(self, client: httpx.AsyncClient, path: str, name: str) -> str:
         response = await client.get(path)
         token = csrf_token_in(response.text, name) if response.status_code == 200 else None
@@ -367,9 +381,12 @@ class ServiceClient:
 
     def _shape_json(self, tool: ToolConfig, response: httpx.Response) -> Any:
         content_type = response.headers.get("content-type", "")
-        if "json" not in content_type:
+        if tool.response == "html":
+            data = self._from_html(tool, response, content_type)
+        elif "json" not in content_type:
             raise ServiceError(f"{self.name} did not return JSON for {tool.name} (got {content_type or 'no type'})")
-        data = response.json()
+        else:
+            data = response.json()
         if tool.pick:
             data = pick(data, tool.pick)
         if self.manifest.redact:

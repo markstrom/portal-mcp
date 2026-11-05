@@ -1,7 +1,7 @@
 # portal-mcp
 
 [![Tests](https://github.com/markstrom/portal-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/markstrom/portal-mcp/actions/workflows/tests.yml)
-[![Version](https://img.shields.io/badge/version-0.9.4-blue)](https://github.com/markstrom/portal-mcp/releases)
+[![Version](https://img.shields.io/badge/version-0.9.5-blue)](https://github.com/markstrom/portal-mcp/releases)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](pyproject.toml)
 [![MCP](https://img.shields.io/badge/MCP-server-8A2BE2)](https://modelcontextprotocol.io)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
@@ -16,7 +16,7 @@
 - Write actions run in two steps and only after you approve them yourself, in a dialog or a local confirmation page. The model cannot approve its own actions.
 - Every write action is logged in a local audit log.
 
-**Status: version 0.9.4.** Runtime with read, file, write and binding tools and human approval; logins through other hosts, BankID and OpenID Connect apps; data hosts called with the app's own token; file uploads; public sites without login; encrypted sessions and several profiles per service; a recorder that explores pages by itself and captures writes without sending them; `self_test`, desktop notifications, the `portal-mcp-creator` skill and the slash commands. Tested against a local mock service.
+**Status: version 0.9.5.** Runtime with read, file, write and binding tools and human approval; logins through other hosts, BankID and OpenID Connect apps; data hosts called with the app's own token; HTML pages as read tools; file uploads; public sites without login; encrypted sessions and several profiles per service; a recorder that explores pages by itself and captures writes without sending them; `self_test`, desktop notifications, the `portal-mcp-creator` skill and the slash commands. Tested against a local mock service.
 
 ## Requirements
 
@@ -357,6 +357,8 @@ When the creator skill records a service, every recording starts with a clean, t
 Some pages are single-page apps that run their own OpenID Connect client after the login: they load a library from a CDN and get their own token from the login host. Declare the CDN in `asset_hosts` (static files only: scripts, styles, fonts, images) and set `login_hosts_after_login: oidc` to keep the login host open after login for the endpoints its discovery document names (POST only to the token endpoint, never the logout endpoint). Both are off by default. The analyzer refuses recordings whose login was not verified, unless `--allow-unverified` is given.
 
 Some services load their data from an API on another host. List such hosts in `data_hosts`. When recording, a data host is allowed for GET over https, and writes to it are captured, not sent, just like the service's own host. It never gets the service's cookies. Tools can call a data host when the service's own app authenticates to it with a token: `data_auth` says where the app keeps that token after login, the runtime opens `data_auth.page` after you log in, reads the token, stores it encrypted with the session, and sends it as `Authorization: Bearer` only to declared data hosts, for tools with `host` set. The recording reports which storage keys hold tokens (key names only) so the skill can fill this in.
+
+HTML pages work as read tools too: `response: html` with `embedded` reads JSON that the page carries in a `<script>` tag (for example `script#__NEXT_DATA__` or JSON-LD), and `extract` takes values with CSS selectors (text, an attribute, lists, and one object per repeated element). The page is parsed as data: no script runs and nothing else is fetched, and only text, attribute values and the selected JSON are returned. The analyzer describes HTML pages with a skeleton that holds no text.
 
 Other tool options: `public: true` makes a read or file tool call the site without the session and never open a login, for public pages in a service that otherwise needs one. `body_encoding: multipart` with `file_fields` uploads files; a file argument must be a file in the `uploads` folder of the data directory, and the approval shows each file's name and size. File tools may download up to 200 MB; other answers are limited to 10 MB.
 

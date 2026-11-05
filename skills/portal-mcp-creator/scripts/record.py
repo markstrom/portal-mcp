@@ -543,6 +543,8 @@ async def record(
         "recorded_at": datetime.now().isoformat(timespec="seconds"),
     })
     summary["captured_writes"] = len(captured)
+    if har_path.exists():
+        os.chmod(har_path, 0o600)  # cookies and page content: private to the user
     summary["har"] = str(har_path) if har_path.exists() else None
     summary["captured_file"] = str(captured_path)
     return summary

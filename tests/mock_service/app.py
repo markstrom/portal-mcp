@@ -19,6 +19,8 @@ Endpoints:
   GET  /payments/new           HTML form that submits a payment on load (write capture test)
   GET  /cases                  page whose data loads only after a click on a tab (explore test)
   GET  /app                    page whose app stores a token in sessionStorage (data_auth test)
+  GET  /search?q=              server-rendered HTML search results, with the same results as
+                               embedded JSON (HTML read tool test)
 """
 
 from __future__ import annotations
@@ -227,6 +229,28 @@ def create_app() -> Starlette:
             "</script>"
         )
 
+    async def search_page(request: Request) -> Response:
+        # Like a server-rendered search page: results as markup and as embedded page data.
+        # Its script would create a payment if it ran; HTML read tools must never run it.
+        if not _sid_valid(request):
+            return RedirectResponse("/login", status_code=302)
+        query = request.query_params.get("q", "")
+        hits = [i for i in invoices if query.lower() in i["owner"]["name"].lower()] if query else invoices
+        rows = "".join(
+            f'<article class="hit"><h2 class="hit-name"><a href="/invoices/{i["id"]}">{i["owner"]["name"]}</a></h2>'
+            f'<span class="hit-amount">{i["amount"]}</span><span class="tag">{i["status"]}</span></article>'
+            for i in hits
+        )
+        page_data = {"props": {"pageProps": {"query": query, "result": {
+            "total": len(hits), "items": [{"id": i["id"], "name": i["owner"]["name"], "amount": i["amount"]} for i in hits],
+        }}}}
+        return HTMLResponse(
+            "<!doctype html><title>Search</title><h1>Results</h1>"
+            f'<section class="results">{rows}</section>'
+            f'<script id="__NEXT_DATA__" type="application/json">{__import__("json").dumps(page_data)}</script>'
+            "<script>fetch('/api/payments', {method: 'POST', body: 'amount=999'});</script>"
+        )
+
     async def delete_invoice(request: Request) -> Response:
         if not _sid_valid(request):
             return JSONResponse({"error": "not logged in"}, status_code=401)
@@ -243,6 +267,7 @@ def create_app() -> Starlette:
             Route("/payments/new", payment_form, methods=["GET"]),
             Route("/cases", cases_page, methods=["GET"]),
             Route("/app", app_page, methods=["GET"]),
+            Route("/search", search_page, methods=["GET"]),
             Route("/login", login_submit, methods=["POST"]),
             Route("/api/session", session_check, methods=["GET"]),
             Route("/account", page_check, methods=["GET"]),

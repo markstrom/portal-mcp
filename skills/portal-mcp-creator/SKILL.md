@@ -123,6 +123,16 @@ With `--service` (or `--manifest`), the hosts come from the manifest: the servic
 
 The catalog holds structure only: path templates, query parameter names, pagination hints, response and body field names with types, and flags. Values are hidden. The analysis deletes the HAR file when it is done, because it holds cookies and page content; add `--keep-har` only if you must analyze it again. For fixed fields (hidden inputs such as a form type), you may show their values with `--show-values-for field1,field2` after checking that they are not personal data or tokens.
 
+**HTML pages.** Many sites answer searches and listings with server-rendered HTML. The catalog lists such pages with `"response": "html"` and an `html_skeleton` that holds no text, only structure:
+- `embedded_json`: JSON the page carries in a `<script>` tag (framework page data such as `script#__NEXT_DATA__`, or `script[type="application/ld+json"]`), as field names and types. Keys that look like data (ids, e-mail addresses) are shown as `<key>`.
+- `repeated_elements`: elements that repeat, such as result rows, as a CSS selector (`tag.class`), how many there were, their typical child elements and the attribute names they use.
+
+Write the tool with `response: html` and one of two recipes (step 10):
+1. Prefer `embedded` when the data is in `embedded_json`: `select` is the script selector from the skeleton, and `path` the dotted path to the part you need (for example `props.pageProps.result`). It is much more stable than CSS selectors, and `pick` narrows it as for JSON.
+2. Otherwise `extract`, with CSS selectors from `repeated_elements`: one field per value, `attr` for an attribute such as `href`, `many: true` for a list, and `fields` for one object per repeated element. A selector that matches nothing gives `null` or an empty list, so `self_test` shows a changed page as changed structure.
+
+Then run the tool once and check its answer with the user before saving: that the fields hold what they should, and that it does not return personal data the user does not need (leave such fields out, or use `redact`). HTML tools break more easily than JSON ones when a site changes its markup; `self_test` reports it.
+
 For writes, look at:
 - `encoding`: `json`, `form` or `multipart` (sets `body_encoding`). For `multipart`, `file_fields` lists the fields that carried files; put them in the tool's `file_fields`. File arguments are file names in the portal-mcp `uploads` directory (in the data directory); tell the user to put files there, because the runtime refuses any other path, and the approval shows each file's name and size.
 - `token_fields`: CSRF or similar tokens in the body. These must not become fixed values. Use `session.csrf` with `body_field` set to the field name. If the token is also in a cookie, use `from_cookie`; if it is a hidden input or meta tag on the form page, use `from_page: {path: <form page>, name: <input or meta name>}`, and the runtime reads a fresh token from that page before each write.
@@ -177,6 +187,37 @@ tools:
       properties:
         page: {type: integer}
     pick: [items.id, items.date, items.amount, items.status]
+  - name: search_listings         # an HTML page, read from the JSON it embeds
+    kind: read
+    description: <written by you>
+    response: html
+    path: /search
+    params:
+      type: object
+      properties:
+        q: {type: string}
+      required: [q]
+    embedded:
+      select: "script#__NEXT_DATA__"
+      path: props.pageProps.result
+    pick: [items.name, items.url]
+  - name: search_listings_markup  # an HTML page without embedded JSON: CSS selectors
+    kind: read
+    description: <written by you>
+    response: html
+    path: /search
+    params:
+      type: object
+      properties:
+        q: {type: string}
+      required: [q]
+    extract:
+      items:
+        select: article.result     # one object per matching element
+        fields:
+          name: {select: h2 a}
+          url: {select: h2 a, attr: href}
+          tags: {select: .tag, many: true}
   - name: list_cases              # a tool on a data host: needs data_auth
     kind: read
     description: <written by you>

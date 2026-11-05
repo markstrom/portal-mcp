@@ -1,6 +1,6 @@
 [project]
 name = "portal-mcp"
-version = "0.9.4"
+version = "0.9.5"
 description = "Turn websites and customer portals without an open API into MCP tools."
 readme = "README.md"
 license = "Apache-2.0"
@@ -19,6 +19,7 @@ dependencies = [
   "desktop-notifier>=6",
   "starlette>=0.37",
   "uvicorn>=0.30",
+  "selectolax>=0.3.21",
 ]
 
 [project.scripts]

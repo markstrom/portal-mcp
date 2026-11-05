@@ -1,0 +1,96 @@
+"""HTML read tools against the mock service: same shape as JSON tools, self_test baselines,
+and no script on the page ever runs."""
+
+from __future__ import annotations
+
+import json
+
+import httpx
+import pytest
+from mcp.shared.memory import create_connected_server_and_client_session
+
+from portal_mcp.login.base import LoginManager
+from portal_mcp.registry import Registry
+from portal_mcp.server import build_server
+from tests.conftest import mock_manifest_yaml, write_manifest
+from tests.e2e.test_runtime import FakeLogin
+from tests.mock_service.data import PASSWORD, USERNAME
+
+HTML_TOOLS = """  - name: search_html
+    kind: read
+    description: Search invoices on the HTML search page.
+    response: html
+    method: GET
+    path: /search
+    params:
+      type: object
+      properties:
+        q: {type: string}
+    test_args: {q: Testkund}
+    extract:
+      items:
+        select: article.hit
+        fields:
+          name: {select: .hit-name a}
+          url: {select: .hit-name a, attr: href}
+          amount: {select: .hit-amount}
+          missing: {select: .not-on-the-page}
+  - name: search_embedded
+    kind: read
+    description: Search invoices, from the page's embedded data.
+    response: html
+    method: GET
+    path: /search
+    params:
+      type: object
+      properties:
+        q: {type: string}
+    test_args: {q: Testkund}
+    embedded:
+      select: "script#__NEXT_DATA__"
+      path: props.pageProps.result
+    pick: [total, items.id, items.name]
+"""
+
+
+@pytest.fixture
+def setup(paths, store, downloads, mock_base_url):
+    write_manifest(paths.services, "mockportal", mock_manifest_yaml(mock_base_url, extra_tools=HTML_TOOLS))
+    registry = Registry(paths, store, LoginManager(FakeLogin(), store), downloads)
+    server, _ = build_server(registry)
+    return {"server": server, "paths": paths, "base_url": mock_base_url}
+
+
+def _json(result):
+    assert not result.isError, result.content[0].text
+    return json.loads(result.content[0].text)
+
+
+async def test_html_tools_return_json_like_json_tools(setup):
+    async with create_connected_server_and_client_session(setup["server"]) as client:
+        css = _json(await client.call_tool("mockportal_search_html", {"q": "Testkund"}))
+        embedded = _json(await client.call_tool("mockportal_search_embedded", {"q": "Testkund"}))
+        listing = _json(await client.call_tool("mockportal_list_invoices", {"page_size": 50}))
+
+    assert css["items"] and all(set(i) == {"name", "url", "amount", "missing"} for i in css["items"])
+    assert css["items"][0]["missing"] is None and css["items"][0]["url"].startswith("/invoices/")
+    assert embedded["total"] == len(embedded["items"]) == len(css["items"])
+    assert set(embedded["items"][0]) == {"id", "name"}  # pick works on HTML tools too
+    assert {i["id"] for i in embedded["items"]} <= {i["id"] for i in listing["items"]}
+
+    # The page's script would have created a payment if it had run.
+    async with httpx.AsyncClient(base_url=setup["base_url"]) as http:
+        await http.post("/login", data={"username": USERNAME, "password": PASSWORD})
+        assert (await http.get("/api/payments")).json()["items"] == []
+
+
+async def test_self_test_saves_and_compares_html_baselines(setup):
+    async with create_connected_server_and_client_session(setup["server"]) as client:
+        first = _json(await client.call_tool("self_test", {"service": "mockportal"}))
+        status = {r["tool"]: r["status"] for r in first["results"]}
+        assert status["search_html"] == "baseline_saved" and status["search_embedded"] == "baseline_saved"
+        baseline = (setup["paths"].services / "mockportal.schemas.json").read_text()
+        assert "Testkund" not in baseline  # structure only
+        second = _json(await client.call_tool("self_test", {"service": "mockportal"}))
+        status = {r["tool"]: r["status"] for r in second["results"]}
+        assert status["search_html"] == "ok" and status["search_embedded"] == "ok"

@@ -21,6 +21,7 @@ from urllib.parse import parse_qsl, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from guard import side_effect_hint  # noqa: E402
+from html_skeleton import skeleton  # noqa: E402
 
 from portal_mcp.schema import schema_of  # noqa: E402,F401  (shared with self_test)
 
@@ -94,6 +95,7 @@ def analyze(har: dict, host: str, data_hosts: tuple[str, ...] | list[str] = ()) 
             "pagination_params": set(),
             "response_kind": None,
             "schema": None,
+            "html": None,
             "examples": 0,
         })
         group["raw_paths"].add(parts.path)
@@ -116,6 +118,18 @@ def analyze(har: dict, host: str, data_hosts: tuple[str, ...] | list[str] = ()) 
         elif "pdf" in mime:
             group["response_kind"] = "file"
             group["examples"] += 1
+        elif "html" in mime:
+            # An HTML page: a candidate for `response: html`, described without any text.
+            if group["response_kind"] in ("json", "file"):
+                continue
+            group["response_kind"] = "html"
+            group["examples"] += 1
+            if group["html"] is None:
+                body = _body_text(response.get("content", {}))
+                try:
+                    group["html"] = skeleton(body) if body else {"embedded_json": [], "repeated_elements": []}
+                except Exception as exc:  # a page that cannot be parsed is reported, not fatal
+                    group["html"] = {"error": type(exc).__name__}
         else:
             skipped[f"not JSON or PDF ({mime or 'no type'})"] += 1
 
@@ -125,6 +139,13 @@ def analyze(har: dict, host: str, data_hosts: tuple[str, ...] | list[str] = ()) 
             continue
         schema = group["schema"]
         kind = "file" if group["response_kind"] == "file" else "read"
+        extra = {}
+        if group["response_kind"] == "html":
+            page = group["html"] or {}
+            if not page.get("embedded_json") and not page.get("repeated_elements") and "error" not in page:
+                skipped["HTML without embedded JSON or repeated elements"] += 1
+                continue
+            extra = {"response": "html", "html_skeleton": page}
         tools.append({
             "suggested_name": suggest_name(template),
             "host": entry_host,
@@ -138,8 +159,21 @@ def analyze(har: dict, host: str, data_hosts: tuple[str, ...] | list[str] = ()) 
             "response_schema": schema,
             "sensitive_fields": sensitive_fields(schema) if schema is not None else [],
             "examples_seen": group["examples"],
+            **extra,
         })
     return {"host": host, "tools": tools, "skipped": dict(skipped)}
+
+
+def _body_text(content: dict) -> str:
+    text = content.get("text") or ""
+    if content.get("encoding") == "base64":
+        import base64
+
+        try:
+            return base64.b64decode(text).decode("utf-8", errors="replace")
+        except ValueError:
+            return ""
+    return text
 
 
 MESSAGING_WORDS = ("message", "meddelande", "chat", "mail", "comment", "kommentar", "reply", "svar", "text", "body", "subject", "ämne", "note")
