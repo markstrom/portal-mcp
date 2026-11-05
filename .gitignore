@@ -1,0 +1,9 @@
+HANDOFF.md
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.har
+.env
+.DS_Store
+uv.lock.bak

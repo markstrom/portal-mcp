@@ -1,0 +1,13 @@
+{
+  "name": "portal-mcp",
+  "owner": {
+    "name": "markstrom"
+  },
+  "plugins": [
+    {
+      "name": "portal-mcp",
+      "source": "./",
+      "description": "Create MCP tools for logged-in web portals that have no open API."
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+[project]
+name = "portal-mcp"
+version = "0.1.0"
+description = "Run MCP tools against logged-in web portals that lack an open API."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "mcp>=1.9,<2",
+  "playwright>=1.47",
+  "httpx>=0.27",
+  "pydantic>=2.7",
+  "pyyaml>=6.0",
+  "platformdirs>=4.2",
+  "keyring>=25.2",
+  "cryptography>=43",
+  "watchfiles>=0.22",
+  "desktop-notifier>=6",
+  "starlette>=0.37",
+  "uvicorn>=0.30",
+]
+
+[project.scripts]
+portal-mcp-runtime = "portal_mcp.__main__:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8",
+  "pytest-asyncio>=0.23",
+]
+
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["runtime/portal_mcp"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+pythonpath = [".", "runtime"]
