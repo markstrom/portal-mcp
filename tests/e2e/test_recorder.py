@@ -291,3 +291,26 @@ async def test_without_explore_nothing_is_clicked(tmp_path, mock_base_url, monke
     assert summary["explored"] is None
     assert not (out / "explored.json").exists()
     assert summary["captured_writes"] == 0
+
+
+async def test_a_public_site_is_recorded_without_a_login(tmp_path, mock_base_url, monkeypatch):
+    import record
+
+    from portal_mcp.manifest import Manifest
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("PORTAL_MCP_HOME", str(home))
+    monkeypatch.setenv("PORTAL_MCP_HEADLESS", "1")
+    manifest = Manifest.model_validate({
+        "name": "opensite", "base_url": mock_base_url, "session": {"type": "none"}, "tools": [],
+    })
+    out = tmp_path / "rec"
+    summary = await record.record(manifest, ["/cases"], out, timeout=30, profile="default",
+                                  explore=True, click_wait=2)
+    assert summary["error"] is None
+    assert summary["public"] is True and summary["session_check"] is None
+    # No login: the page itself has no session, so its writes are still captured, not sent.
+    assert summary["visited"] == [{"path": "/cases", "status": "ok"}]
+    assert summary["captured_writes"] >= 1
+    marker = json.loads((out / "recording.json").read_text())
+    assert marker["public"] is True

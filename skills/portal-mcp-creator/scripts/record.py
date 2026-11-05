@@ -147,6 +147,9 @@ async def record(
     oidc_endpoints: dict[str, dict[str, set[str]]] = {}
     oidc_after_login: dict[str, int] = {}
     headless = os.environ.get("PORTAL_MCP_HEADLESS") == "1"
+    # A public site (session.type none): no login, the pages are visited directly. The guard
+    # still treats the run as logged in, so every write is blocked and captured.
+    public = not manifest.needs_login
     # Traffic counters, read before and after each exploring click.
     traffic = {"requests": 0, "json_reads": 0, "data_host": 0, "captured": 0}
     explored: list[dict] = []
@@ -173,6 +176,7 @@ async def record(
         "oidc_after_login": oidc_after_login,
         "session_check": None,
         "login_verified": False,
+        "public": public,
         "menu_links": None,
         "visited": [],
         "explored": None,
@@ -188,10 +192,14 @@ async def record(
     }
 
     # 1. Preflight: the check without cookies must not answer 200.
-    preflight = await preflight_check(manifest)
-    summary["session_check"] = {"logged_out_answer": preflight.status, "verdict": preflight.verdict,
-                                "note": preflight.explain(manifest)}
-    if preflight.verdict == "open":
+    if public:
+        check_candidates = ()
+        status("Public site (session.type none): no login, the pages are visited directly.")
+    preflight = await preflight_check(manifest) if not public else None
+    if preflight is not None:
+        summary["session_check"] = {"logged_out_answer": preflight.status, "verdict": preflight.verdict,
+                                    "note": preflight.explain(manifest)}
+    if preflight is not None and preflight.verdict == "open":
         summary["error"] = preflight.explain(manifest)
         status(summary["error"])
         return summary
@@ -206,10 +214,10 @@ async def record(
         result = await preflight_check(manifest_with_check(manifest, path))
         candidates.append({"path": path, "logged_out": result, "logged_in": None})
         status(f"Candidate session check {path}: {result.status or result.error} when logged out.")
-    if preflight.verdict == "redirects":
+    if preflight is not None and preflight.verdict == "redirects":
         status("Warning: " + preflight.explain(manifest))
     # Look for a better check unless the current one already answers 401/403 when logged out.
-    suggest = suggest_check or preflight.verdict != "rejects"
+    suggest = not public and (suggest_check or preflight.verdict != "rejects")
     seen_json: list[str] = []
     status(f"Using a {'clean, temporary' if temporary_profile else 'reused'} browser profile.")
 
@@ -313,13 +321,18 @@ async def record(
                 context.on("response", lambda r: response_tasks.append(asyncio.ensure_future(inspect_response(r))))
 
                 page = await _first_page(context)
-                status(f"Browser window open. Log in to {manifest.name} in the window.")
-                await page.goto(manifest.login_url)
+                if public:
+                    state["logged_in"] = True  # writes are captured, never sent
+                    status(f"Browser window open on {manifest.name}. No login is needed.")
+                    await page.goto(manifest.base_url, wait_until="domcontentloaded", timeout=30000)
+                else:
+                    status(f"Browser window open. Log in to {manifest.name} in the window.")
+                    await page.goto(manifest.login_url)
 
                 # 3. Wait for a verified login.
                 observation = LoginObservation()
                 deadline = time.monotonic() + timeout
-                while True:
+                while not public:
                     if state["header_too_large"] is not None:
                         raise LoginError(state["header_too_large"]["message"])
                     if await _capture(context, page, manifest, observation=observation) is not None:
@@ -327,10 +340,11 @@ async def record(
                     if time.monotonic() > deadline:
                         raise LoginError(login_not_verified_message(manifest, observation, timeout))
                     await asyncio.sleep(poll_seconds)
-                state["logged_in"] = True
-                summary["login_verified"] = True
-                summary["session_check"]["logged_in_answer"] = 200
-                status("Login verified.")
+                if not public:
+                    state["logged_in"] = True
+                    summary["login_verified"] = True
+                    summary["session_check"]["logged_in_answer"] = 200
+                    status("Login verified.")
 
                 # Candidate session checks: their logged-in answer, with a copy of the cookies.
                 if candidates:
@@ -349,7 +363,7 @@ async def record(
                 chosen: list[str] = []
                 if discover:
                     current = urlsplit(page.url)
-                    on_login_page = current.path == (urlsplit(manifest.login_url).path or "/")
+                    on_login_page = not public and current.path == (urlsplit(manifest.login_url).path or "/")
                     if (current.hostname or "").lower() != service_host or on_login_page:
                         # Back to the service's start page (same host, GET) to find its menu.
                         await page.goto(manifest.base_url, wait_until="domcontentloaded", timeout=30000)
@@ -460,6 +474,7 @@ async def record(
     _write_private(out_dir / "recording.json", {
         "service": manifest.name,
         "login_verified": summary["login_verified"],
+        "public": public,
         "recorded_at": datetime.now().isoformat(timespec="seconds"),
     })
     summary["captured_writes"] = len(captured)

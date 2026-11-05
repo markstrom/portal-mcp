@@ -463,6 +463,7 @@ class Registry:
         for name, client in sorted(self._clients.items()):
             services[name] = {
                 "base_url": client.manifest.base_url,
+                "needs_login": client.manifest.needs_login,
                 "profiles": client.session_status(),
                 "tools": sorted(t for t, (svc, _, _) in self._tools.items() if svc == name),
                 "hidden_tools": {k.split(".", 1)[1]: v for k, v in self.hidden.items() if k.startswith(name + ".")},

@@ -1,6 +1,6 @@
 # portal-mcp
 
-Create MCP tools for logged-in web services and customer portals that have no open API.
+Create MCP tools for logged-in web services, customer portals and public sites that have no open API.
 
 - You log in yourself, in a visible browser window. The runtime never reads or stores your password.
 - Each service is described by a YAML manifest. The runtime turns the manifest into MCP tools.
@@ -42,7 +42,7 @@ Remove it again with `claude plugin uninstall portal-mcp@portal-mcp` and `claude
 
 | Command | What it does |
 |---|---|
-| `/portal-mcp:add <url>` | Add a service. It starts at once: you log in, the plugin visits and explores the pages itself, then shows a catalog where you choose the tools. |
+| `/portal-mcp:add <url>` | Add a service, logged in or public. It starts at once: you log in if the service needs it, the plugin visits and explores the pages itself, then shows a catalog where you choose the tools. |
 | `/portal-mcp:update <service>` | Explore more parts of a service, or redo discovery for tools that stopped working. |
 | `/portal-mcp:list` | Services, profiles, tools and session status. |
 | `/portal-mcp:test <service> [profile]` | Run `self_test` and suggest an update if answers changed. |
@@ -62,6 +62,8 @@ flowchart LR
 ```
 
 The skill creates manifests. The runtime turns them into tools. The browser is only used for logging in and recording, and you control the login.
+
+Public sites work too: with `session: {type: none}` there is no login, no session and nothing stored, and tools call the site without cookies. If a site has both public pages and a login, `/portal-mcp:add` asks once which part you want. For public sites the site's terms and `robots.txt` apply; the skill leaves disallowed paths out and suggests a low rate limit.
 
 While recording, the plugin explores each page itself: it clicks tabs, expandable sections and "show more" buttons, because many single-page apps load their data only after such a click. It never clicks controls that mean an action (log out, delete, pay, send, save, confirm and similar), submit buttons, unlabeled controls or downloads, and every write a click causes is blocked and captured, never sent.
 

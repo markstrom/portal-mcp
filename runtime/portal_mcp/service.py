@@ -93,7 +93,9 @@ class ServiceClient:
 
     # ----- sessions -------------------------------------------------------
 
-    async def _ensure_session(self, profile: str, *, force_login: bool = False) -> StoredSession:
+    async def _ensure_session(self, profile: str, *, force_login: bool = False) -> StoredSession | None:
+        if not self.manifest.needs_login:
+            return None  # a public site: no session, never a login window
         session = None if force_login else self._store.load(self.name, profile)
         if session is not None:
             last = self._checked.get(profile)
@@ -159,6 +161,8 @@ class ServiceClient:
 
         With a profile, only that profile is logged out; otherwise all of them.
         """
+        if not self.manifest.needs_login:
+            return "this service has no login (session.type none); nothing to log out of"
         remote = "no logout endpoint configured"
         profiles = [self.resolve_profile(profile)] if profile else self.manifest.profiles
         for profile in profiles:
@@ -186,6 +190,8 @@ class ServiceClient:
         return removed
 
     def session_status(self) -> dict[str, str | None]:
+        if not self.manifest.needs_login:
+            return {profile: "no login needed" for profile in self.manifest.profiles}
         return {profile: self._store.saved_at(self.name, profile) for profile in self.manifest.profiles}
 
     # ----- tool calls -----------------------------------------------------
@@ -206,6 +212,11 @@ class ServiceClient:
         self._rate.acquire()
         session = await self._ensure_session(profile)
         response = await self._send(tool, arguments, session)
+        if response.status_code in (401, 403) and not self.manifest.needs_login:
+            raise ServiceError(
+                f"{self.name} answered HTTP {response.status_code} for {tool.name}. This service is set up "
+                "without login (session.type none), so the page may need a login after all."
+            )
         if response.status_code in (401, 403):
             log.info("%s rejected the session; logging in again", self.name)
             session = await self._ensure_session(profile, force_login=True)
@@ -232,7 +243,7 @@ class ServiceClient:
         self._rate.acquire()
         session = await self._ensure_session(profile)
         response = await self._send(tool, arguments, session)
-        if response.status_code == 401:
+        if response.status_code == 401 and self.manifest.needs_login:
             # 401 means the request was not accepted, so one retry after a new login is safe.
             log.info("%s rejected the session; logging in again before retrying the write", self.name)
             session = await self._ensure_session(profile, force_login=True)
@@ -251,7 +262,7 @@ class ServiceClient:
             body = response.text[:4000]
         return {"http_status": response.status_code, "ok": response.status_code < 400, "response": body}
 
-    async def _send(self, tool: ToolConfig, arguments: dict[str, Any], session: StoredSession) -> httpx.Response:
+    async def _send(self, tool: ToolConfig, arguments: dict[str, Any], session: StoredSession | None) -> httpx.Response:
         args = dict(arguments)
         path = tool.path
         for match in PATH_PARAM.findall(tool.path):
@@ -278,6 +289,8 @@ class ServiceClient:
             raise ServiceError(f"response from {self.name} is larger than {MAX_RESPONSE_BYTES} bytes")
         if is_header_too_large(response.status_code, response.text[:4000], response.reason_phrase):
             host = urlsplit(self.manifest.base_url).hostname or self.manifest.base_url
+            if session is None:
+                raise ServiceError(f"{self.name} rejected the request because its headers were too large")
             raise ServiceError(
                 header_too_large_message(self.name, host, session.cookies)
                 + " Call forget_session with browser_profile set to true, then call the tool again "

@@ -328,12 +328,15 @@ def analyze_hosts(
 
 
 def _login_state(har_path: Path) -> bool | None:
-    """True or False from the recorder's recording.json next to the HAR; None if it is missing."""
+    """True or False from the recorder's recording.json next to the HAR; None if it is missing.
+    A public recording (no login needed) counts as True."""
     marker = har_path.parent / "recording.json"
     if not marker.exists():
         return None
     try:
-        return bool(json.loads(marker.read_text(encoding="utf-8")).get("login_verified"))
+        data = json.loads(marker.read_text(encoding="utf-8"))
+        # A public site needs no login, so its recording is accepted as it is.
+        return bool(data.get("login_verified") or data.get("public"))
     except (OSError, ValueError):
         return None
 

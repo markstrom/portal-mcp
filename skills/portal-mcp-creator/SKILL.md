@@ -1,6 +1,6 @@
 ---
 name: portal-mcp-creator
-description: Create MCP tools for a logged-in web service that has no open API. Use when the user wants to add a service, add functions (listing, viewing, downloading, submitting forms, payments, bids) from a website or customer portal, or repair the tools of an existing service. Covers discovery, guided recording, capture of writes without performing them, analysis, catalog, the user's choice, manifest generation and verification.
+description: Create MCP tools for a web service that has no open API, logged-in or public. Use when the user wants to add a service, add functions (listing, viewing, downloading, submitting forms, payments, bids) from a website or customer portal, or repair the tools of an existing service. Covers discovery, guided recording, capture of writes without performing them, analysis, catalog, the user's choice, manifest generation and verification.
 ---
 
 # portal-mcp-creator
@@ -29,7 +29,7 @@ uv run --project "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/skills/po
 ### 1. Start at once
 Take the process forward yourself; the user should not have to know what the service offers before they have seen it. Ask only for the web address if none was given. Do not ask which parts of the service the user needs: the recording finds out (steps 4 and 5), and the user chooses in the catalog (step 9), which is the first place they are asked what they want.
 
-Derive the service name from the host (lowercase, letters, digits and `-`; for example the main word of the domain), and go straight on with steps 2 to 4. Tell the user in one or two lines what will happen: a browser window opens, they log in there themselves, and the plugin then visits and explores the pages and shows what it found. If the user did name functions (for example "list my invoices and report a fault"), look for those first and pre-select them in the catalog.
+Derive the service name from the host (lowercase, letters, digits and `-`; for example the main word of the domain), and go straight on with reconnaissance (step 2). Tell the user in one or two lines what will happen: a browser window opens, they log in there themselves if the service needs it, and the plugin then visits and explores the pages and shows what it found. If the user did name functions (for example "list my invoices and report a fault"), look for those first and pre-select them in the catalog.
 
 ### 2. Reconnaissance (no login)
 ```bash
@@ -37,11 +37,21 @@ uv run --project "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/skills/po
 ```
 This looks for public API docs (OpenAPI/Swagger) and extracts endpoint candidates from the web app's JavaScript. If there is an OpenAPI document, use it to name and type the endpoints later.
 
+**Public or logged in.** `site` says whether the start page has public content (`public_content`) and whether it offers a login (`login_found`, with the sign-in links found). Decide the mode from it:
+- Only public content: a public site. Use `session: {type: none}` without asking.
+- Only a login (for example the start page is a login form): a logged-in service, as before.
+- Both: ask the user one question, and only this one: "Do you want to use what <service> shows to everyone, what you see after logging in, or both?" Public means `session: {type: none}`. Logged in or both means the logged-in mode; the recording then visits the public pages too, but every tool needs the login.
+- If the user already said which they want, do not ask.
+
+**Public sites.** Tell the user in one line that the site's terms of use and `robots.txt` apply, and that the plugin reads only what anyone can see in a browser. `robots` says whether the start page is allowed for crawlers and which paths are disallowed for all; leave disallowed paths out of the pages to visit and out of the tools, and if `start_page_allowed` is false, say so and ask the user whether to go on. Suggest a low rate limit (10 per minute) and caching of reads (for example `cache_seconds: 300`).
+
 ### 3. Static analysis
 Use the `endpoints` in `recon.json` as hints for paths, methods and fields. Endpoints found with POST, PUT, PATCH or DELETE are write candidates for step 6.
 
 ### 4. Login first, then discovery
 Write a minimal manifest draft first (name, base_url, login_url, session, empty tools) and save it as `<name>.yaml` in `services_dir` from the `list_services` tool. Nothing can be explored before the login works, so make the login reliable first.
+
+For a public site the draft is just `name`, `base_url`, `session: {type: none}`, `rate_limit_per_minute`, `cache_seconds` and empty `tools`; no `login_url`, no `session.check`, no login hosts. The recording then opens the start page directly without a login: there is no preflight, no login wait and no session check to suggest, and the steps about logins below do not apply. Writes are still blocked and captured, never sent.
 
 Start the recording in discovery mode, in the background, because it waits for the user twice (the login, then the choice of pages):
 
@@ -129,7 +139,7 @@ This is where the user first says what they want. Ask which tools to create.
 - Also ask about rate limit (default 30 per minute), caching of reads (`cache_seconds`) and fields to remove from responses (`redact`), and suggest the sensitive fields from the catalog.
 
 ### 10. Generation
-Write the manifest. Descriptions are yours, written from the analysis, in the user's language. Shape:
+Write the manifest. Descriptions are yours, written from the analysis, in the user's language. For a public site, leave out `login_url` and write `session: {type: none}` instead of the session block. Shape:
 
 ```yaml
 name: <service>

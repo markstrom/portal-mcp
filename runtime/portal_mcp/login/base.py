@@ -68,6 +68,8 @@ class LoginManager:
 
         asyncio.shield keeps the login running when this wait times out.
         """
+        if not manifest.needs_login:
+            raise LoginError(f"{manifest.name} has no login (session.type none)")
         task = self._start(manifest, profile)
         try:
             return await asyncio.wait_for(asyncio.shield(task), timeout=wait_seconds)

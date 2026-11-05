@@ -52,16 +52,23 @@ class CsrfConfig(BaseModel):
 
 
 class SessionConfig(BaseModel):
-    type: Literal["cookies", "bearer"] = "cookies"
+    # "none": a public site. No login, no session check, nothing stored.
+    type: Literal["cookies", "bearer", "none"] = "cookies"
     bearer_source: str | None = None  # e.g. "localStorage:auth_token"
     csrf: CsrfConfig | None = None
-    check: str  # path; 200 means the session is valid, 401 means it is not
+    check: str | None = None  # path; 200 means the session is valid, 401 means it is not
     logout: str | None = None  # path, called with POST
 
     @model_validator(mode="after")
     def _bearer_needs_source(self) -> SessionConfig:
         if self.type == "bearer" and not self.bearer_source:
             raise ValueError("session.bearer_source is required when session.type is 'bearer'")
+        if self.type == "none":
+            if self.check or self.logout or self.csrf or self.bearer_source:
+                raise ValueError("session.type 'none' takes no check, logout, csrf or bearer_source")
+            return self
+        if not self.check:
+            raise ValueError("session.check is required unless session.type is 'none'")
         if not self.check.startswith("/"):
             raise ValueError("session.check must start with '/'")
         if self.logout is not None and not self.logout.startswith("/"):
@@ -151,9 +158,9 @@ class Manifest(BaseModel):
     name: str
     enabled: bool = True
     base_url: str
-    login_url: str
+    login_url: str | None = None  # required unless session.type is "none"
     profiles: list[str] = Field(default_factory=lambda: ["default"])
-    session: SessionConfig
+    session: SessionConfig  # required, also for public sites: `session: {type: none}`
     rate_limit_per_minute: int = Field(default=30, ge=1, le=600)
     cache_seconds: int = Field(default=0, ge=0, le=3600)
     redact: list[str] = Field(default_factory=list)
@@ -210,6 +217,18 @@ class Manifest(BaseModel):
             if not NAME_RE.match(profile):
                 raise ValueError(f"invalid profile name {profile!r}")
         return value
+
+    @property
+    def needs_login(self) -> bool:
+        return self.session.type != "none"
+
+    @model_validator(mode="after")
+    def _login_settings(self) -> Manifest:
+        if self.needs_login and not self.login_url:
+            raise ValueError("login_url is required unless session.type is 'none'")
+        if not self.needs_login and (self.login_hosts or self.login_hosts_after_login != "blocked"):
+            raise ValueError("a service without login (session.type 'none') cannot have login hosts")
+        return self
 
     @model_validator(mode="after")
     def _unique_tools(self) -> Manifest:
