@@ -94,3 +94,55 @@ async def test_self_test_saves_and_compares_html_baselines(setup):
         second = _json(await client.call_tool("self_test", {"service": "mockportal"}))
         status = {r["tool"]: r["status"] for r in second["results"]}
         assert status["search_html"] == "ok" and status["search_embedded"] == "ok"
+
+
+LISTING_TOOL = """  - name: listings{suffix}
+    kind: read
+    description: Listings from the page's structured data.
+    response: html
+    method: GET
+    path: /listings
+    public: true
+    params:
+      type: object
+      properties:
+        q: {{type: string}}
+      required: [q]
+    test_args: {{q: {query}}}
+    embedded:
+      select: 'script[type="application/ld+json"]'
+      path: itemListElement
+    pick: [item.name|name, item.url|url, item.address.addressLocality]
+"""
+
+
+@pytest.fixture
+def listings(paths, store, downloads, mock_base_url):
+    tools = LISTING_TOOL.format(suffix="", query="mixed") + LISTING_TOOL.format(suffix="_none", query="none")
+    write_manifest(paths.services, "mockportal", mock_manifest_yaml(mock_base_url, extra_tools=tools))
+    registry = Registry(paths, store, LoginManager(FakeLogin(), store), downloads)
+    server, _ = build_server(registry)
+    return {"server": server, "paths": paths}
+
+
+async def test_fallback_picks_give_results_for_both_item_shapes(listings):
+    async with create_connected_server_and_client_session(listings["server"]) as client:
+        nested = _json(await client.call_tool("mockportal_listings", {"q": "nested"}))
+        flat = _json(await client.call_tool("mockportal_listings", {"q": "flat"}))
+        mixed = _json(await client.call_tool("mockportal_listings", {"q": "mixed"}))
+    assert nested == [{"item": {"name": "Testperson Ett", "url": "/p/1", "address": {"addressLocality": "Teststad"}}}]
+    assert flat == [{"item": {"name": "Testperson Två", "url": "/p/2"}}]  # same shape as the nested one
+    assert len(mixed) == 2 and all(i["item"]["name"] for i in mixed)
+
+
+async def test_self_test_saves_a_real_baseline_and_flags_an_empty_page(listings):
+    async with create_connected_server_and_client_session(listings["server"]) as client:
+        out = _json(await client.call_tool("self_test", {"service": "mockportal"}))
+    results = {r["tool"]: r for r in out["results"]}
+    assert results["listings"]["status"] == "baseline_saved"
+    assert results["listings_none"]["status"] == "empty"
+    assert "listings_none" in out["summary"]
+    saved = json.loads((listings["paths"].services / "mockportal.schemas.json").read_text())["tools"]
+    assert "listings_none" not in saved  # no baseline for an empty answer
+    assert saved["listings"]["schema"][0]["item"]["name"] == "string"
+    assert "Testperson" not in json.dumps(saved)

@@ -1,7 +1,7 @@
 # portal-mcp
 
 [![Tests](https://github.com/markstrom/portal-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/markstrom/portal-mcp/actions/workflows/tests.yml)
-[![Version](https://img.shields.io/badge/version-0.9.5-blue)](https://github.com/markstrom/portal-mcp/releases)
+[![Version](https://img.shields.io/badge/version-0.9.6-blue)](https://github.com/markstrom/portal-mcp/releases)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](pyproject.toml)
 [![MCP](https://img.shields.io/badge/MCP-server-8A2BE2)](https://modelcontextprotocol.io)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
@@ -16,7 +16,7 @@
 - Write actions run in two steps and only after you approve them yourself, in a dialog or a local confirmation page. The model cannot approve its own actions.
 - Every write action is logged in a local audit log.
 
-**Status: version 0.9.5.** Runtime with read, file, write and binding tools and human approval; logins through other hosts, BankID and OpenID Connect apps; data hosts called with the app's own token; HTML pages as read tools; file uploads; public sites without login; encrypted sessions and several profiles per service; a recorder that explores pages by itself and captures writes without sending them; `self_test`, desktop notifications, the `portal-mcp-creator` skill and the slash commands. Tested against a local mock service.
+**Status: version 0.9.6.** Runtime with read, file, write and binding tools and human approval; logins through other hosts, BankID and OpenID Connect apps; data hosts called with the app's own token; HTML pages as read tools; file uploads; public sites without login; encrypted sessions and several profiles per service; a recorder that explores pages by itself and captures writes without sending them; `self_test`, desktop notifications, the `portal-mcp-creator` skill and the slash commands. Tested against a local mock service.
 
 ## Requirements
 
@@ -341,6 +341,10 @@ Common tools:
 `self_test` runs every exposed read tool. Tools with required parameters need `test_args` in the manifest, for example `test_args: {page: 1}`; without them they are skipped. Write and file tools are never run.
 
 The first run saves the structure of each answer (field names and types, never values) in `services/<service>.schemas.json`. Later runs report removed or changed fields as `changed`, and new fields as notes. Run it with `update_baseline: true` to accept a new structure.
+
+An answer that is empty, or whose items are all empty after `pick`, gets status `empty` and is never saved as a baseline; `unmatched_pick` lists pick paths that matched no item. When a list's items come in more than one shape, the saved structure keeps one variant per shape.
+
+Pick paths can have fallbacks: `item.name|name` uses the first path that exists in each item and writes the value at the first path, so items of different shapes come out in one shape.
 
 ### Profiles
 

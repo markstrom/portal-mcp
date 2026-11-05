@@ -23,7 +23,8 @@ from mcp import types
 from .config import Paths, has_display
 from .login.base import LoginManager
 from .manifest import load_manifests
-from .schema import compare, is_breaking, schema_of
+from .schema import compare, has_fields, is_breaking, schema_of
+from .transform import has_content, unmatched_paths
 from .service import NeedsLogin, PATH_PARAM, ServiceClient, ServiceError
 from .session_store import SessionStore
 from .writes import (
@@ -428,8 +429,27 @@ class Registry:
             except ServiceError as exc:
                 results.append({**entry, "status": "error", "error": str(exc)})
                 continue
+            if not has_content(answer):
+                # An empty answer says nothing about the structure: never save it as a baseline.
+                reason = (
+                    "every item is empty after pick; check that the pick paths match the items "
+                    "(use 'a.b|c' fallbacks for items of more than one shape)"
+                    if tool.pick and isinstance(answer, (list, dict)) and answer
+                    else "the answer is empty; use test_args that give results"
+                )
+                empty = {**entry, "status": "empty", "reason": reason}
+                if tool.pick:
+                    empty["unmatched_pick"] = unmatched_paths(answer, tool.pick)
+                results.append(empty)
+                continue
             current = schema_of(answer)
+            if tool.pick:
+                unmatched = unmatched_paths(answer, tool.pick)
+                if unmatched:
+                    entry["unmatched_pick"] = unmatched
             saved = baseline["tools"].get(tool.name)
+            if saved is not None and not has_fields(saved.get("schema")):
+                saved = None  # an earlier baseline without any fields is replaced
             if saved is None or update_baseline:
                 baseline["tools"][tool.name] = {
                     "schema": current,
@@ -449,7 +469,7 @@ class Registry:
         if changed_baseline:
             self._save_baseline(client.name, baseline)
 
-        broken = [r["tool"] for r in results if r["status"] in ("changed", "error")]
+        broken = [r["tool"] for r in results if r["status"] in ("changed", "error", "empty")]
         return {
             "service": client.name,
             "profile": profile,

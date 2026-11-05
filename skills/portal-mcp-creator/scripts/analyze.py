@@ -54,7 +54,8 @@ def sensitive_fields(schema, prefix: str = "") -> list[str]:
                 found.append(name)
             found.extend(sensitive_fields(sub, name + "."))
     elif isinstance(schema, list) and schema:
-        found.extend(sensitive_fields(schema[0], prefix))
+        for variant in schema:  # every item variant
+            found.extend(f for f in sensitive_fields(variant, prefix) if f not in found)
     return found
 
 

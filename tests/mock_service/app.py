@@ -21,6 +21,8 @@ Endpoints:
   GET  /app                    page whose app stores a token in sessionStorage (data_auth test)
   GET  /search?q=              server-rendered HTML search results, with the same results as
                                embedded JSON (HTML read tool test)
+  GET  /listings?q=            public HTML page whose JSON-LD list items come in two shapes:
+                               q=nested, q=flat, q=mixed, or q=none for no items
 """
 
 from __future__ import annotations
@@ -251,6 +253,20 @@ def create_app() -> Starlette:
             "<script>fetch('/api/payments', {method: 'POST', body: 'amount=999'});</script>"
         )
 
+    async def listings_page(request: Request) -> Response:
+        # Structured data whose list items come in two shapes, as some sites mix them.
+        # Made-up names only.
+        nested = [{"@type": "ListItem", "position": 1, "item": {
+            "@type": "Person", "name": "Testperson Ett", "url": "/p/1",
+            "address": {"streetAddress": "Testgatan 1", "addressLocality": "Teststad"}}}]
+        flat = [{"@type": "ListItem", "position": 2, "name": "Testperson Två", "url": "/p/2"}]
+        items = {"nested": nested, "flat": flat, "mixed": nested + flat}.get(request.query_params.get("q", ""), [])
+        data = {"@context": "https://schema.org", "@type": "ItemList", "itemListElement": items}
+        return HTMLResponse(
+            "<!doctype html><title>Listings</title>"
+            f'<script type="application/ld+json">{__import__("json").dumps(data)}</script>'
+        )
+
     async def delete_invoice(request: Request) -> Response:
         if not _sid_valid(request):
             return JSONResponse({"error": "not logged in"}, status_code=401)
@@ -268,6 +284,7 @@ def create_app() -> Starlette:
             Route("/cases", cases_page, methods=["GET"]),
             Route("/app", app_page, methods=["GET"]),
             Route("/search", search_page, methods=["GET"]),
+            Route("/listings", listings_page, methods=["GET"]),
             Route("/login", login_submit, methods=["POST"]),
             Route("/api/session", session_check, methods=["GET"]),
             Route("/account", page_check, methods=["GET"]),

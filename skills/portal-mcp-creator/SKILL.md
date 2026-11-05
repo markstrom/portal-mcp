@@ -131,7 +131,15 @@ Write the tool with `response: html` and one of two recipes (step 10):
 1. Prefer `embedded` when the data is in `embedded_json`: `select` is the script selector from the skeleton, and `path` the dotted path to the part you need (for example `props.pageProps.result`). It is much more stable than CSS selectors, and `pick` narrows it as for JSON.
 2. Otherwise `extract`, with CSS selectors from `repeated_elements`: one field per value, `attr` for an attribute such as `href`, `many: true` for a list, and `fields` for one object per repeated element. A selector that matches nothing gives `null` or an empty list, so `self_test` shows a changed page as changed structure.
 
-Then run the tool once and check its answer with the user before saving: that the fields hold what they should, and that it does not return personal data the user does not need (leave such fields out, or use `redact`). HTML tools break more easily than JSON ones when a site changes its markup; `self_test` reports it.
+Items of more than one shape: a page may mix item shapes, for example list items with the data under `item` and items with it at the top. The skeleton shows every variant of a list. Write such pick paths with fallbacks, `item.name|name`: the first path that exists in an item is used, and its value is written at the first path, so every item comes out in one shape.
+
+Before an HTML tool is saved, it must pass a real test query:
+1. Call it once with a realistic query (the same values as its `test_args`) and check that at least one item has data after `pick`. A list of empty objects means the pick paths do not match the items; fix them, do not save the tool.
+2. Every pick path must match at least one item. `self_test` lists paths that matched nothing as `unmatched_pick`; add a fallback or remove the path.
+3. Try a second query that gives other kinds of hits (for example a company instead of a person) and check that its items are not empty either.
+4. Check the answer with the user: that the fields hold what they should, and that it does not return personal data the user does not need (leave such fields out, or use `redact`).
+
+HTML tools break more easily than JSON ones when a site changes its markup; `self_test` reports it.
 
 For writes, look at:
 - `encoding`: `json`, `form` or `multipart` (sets `body_encoding`). For `multipart`, `file_fields` lists the fields that carried files; put them in the tool's `file_fields`. File arguments are file names in the portal-mcp `uploads` directory (in the data directory); tell the user to put files there, because the runtime refuses any other path, and the approval shows each file's name and size.
@@ -295,6 +303,7 @@ Read and file tools: call each one once and check that the answer has the fields
 Then save the baseline for `self_test`:
 - Give every read tool with required parameters a `test_args` entry with safe example values that the user agrees to (for example `{page: 1}`). Tools without them are skipped by `self_test`.
 - Call the `self_test` tool for the service. The first run saves the answer structure of each read tool (field names and types only, no values) in `services/<name>.schemas.json`. Later runs compare against it.
+- A tool with status `empty` gave an empty answer, or only empty items after `pick`, and no baseline was saved. Fix its `test_args` or its pick paths (see `unmatched_pick`) and run `self_test` again; never leave a tool whose test answer is empty. `unmatched_pick` on a tool with status `ok` or `baseline_saved` names pick paths that matched no item; fix or remove them.
 
 Write and binding tools:
 1. Compare each tool with its capture: method, path template, `body_encoding`, and field names in `body_schema` plus `body_constants` must match what was captured. Report any difference.

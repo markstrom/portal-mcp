@@ -1,6 +1,6 @@
 {
   "name": "portal-mcp",
-  "version": "0.9.5",
+  "version": "0.9.6",
   "description": "Turn websites, customer portals and public sites without an open API into MCP tools. You log in yourself in a visible browser window; the runtime never handles passwords, and writes need your approval.",
   "author": {
     "name": "markstrom"
