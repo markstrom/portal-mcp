@@ -1,14 +1,20 @@
 # portal-mcp
 
-Create MCP tools for logged-in web services, customer portals and public sites that have no open API.
+[![Version](https://img.shields.io/badge/version-0.9.0-blue)](https://github.com/markstrom/portal-mcp/releases)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](pyproject.toml)
+[![MCP](https://img.shields.io/badge/MCP-server-8A2BE2)](https://modelcontextprotocol.io)
+[![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](#install)
 
+**Turn any website or customer portal into MCP tools, without an open API and without writing code.** portal-mcp is a Claude Code plugin and a local MCP server. You point it at a site, log in yourself if the site needs it, and the plugin explores the pages in a real browser, learns how they load their data, and lets you choose which tools Claude gets: list your invoices, download a PDF, look something up, fill in a form.
+
+- Works with logged-in services, customer portals and public sites.
 - You log in yourself, in a visible browser window. The runtime never reads or stores your password.
 - Each service is described by a YAML manifest. The runtime turns the manifest into MCP tools.
 - Sessions are stored encrypted. The encryption key lives in your system keyring.
 - Write actions run in two steps and only after you approve them yourself, in a dialog or a local confirmation page. The model cannot approve its own actions.
 - Every write action is logged in a local audit log.
 
-**Status: version 0.4.0.** Runtime, `local` login provider, encrypted sessions, read, file, write and binding tools with human approval, `self_test`, several profiles per service, desktop notifications, the `portal-mcp-creator` skill and the slash commands are in place, with tests against a local mock service.
+**Status: version 0.9.0.** Runtime with read, file, write and binding tools and human approval; logins through other hosts, BankID and OpenID Connect apps; public sites without login; encrypted sessions and several profiles per service; a recorder that explores pages by itself and captures writes without sending them; `self_test`, desktop notifications, the `portal-mcp-creator` skill and the slash commands. Tested against a local mock service.
 
 ## Requirements
 
