@@ -60,16 +60,19 @@ class LocalLoginProvider:
                 await context.close()
 
 
-async def _launch(playwright: Any, profile_dir: Path, headless: bool) -> Any:
-    """Prefer the installed Google Chrome. Fall back to Playwright's Chromium."""
+async def _launch(playwright: Any, profile_dir: Path, headless: bool, **options: Any) -> Any:
+    """Prefer the installed Google Chrome. Fall back to Playwright's Chromium.
+
+    Extra options are passed to Playwright (the recorder uses them for HAR output).
+    """
     try:
         return await playwright.chromium.launch_persistent_context(
-            str(profile_dir), channel="chrome", headless=headless
+            str(profile_dir), channel="chrome", headless=headless, **options
         )
     except Exception as chrome_error:
         log.info("Google Chrome not usable (%s); using Playwright Chromium", chrome_error)
     try:
-        return await playwright.chromium.launch_persistent_context(str(profile_dir), headless=headless)
+        return await playwright.chromium.launch_persistent_context(str(profile_dir), headless=headless, **options)
     except Exception as exc:
         raise LoginError(
             "no browser available. Install Google Chrome, or run: uv run playwright install chromium"

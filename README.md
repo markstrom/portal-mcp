@@ -22,6 +22,59 @@ Create MCP tools for logged-in web services and customer portals that have no op
 /plugin install portal-mcp@portal-mcp
 ```
 
+## How it fits together
+
+```mermaid
+flowchart LR
+    client["MCP client<br/>(Claude Code)"] -- "stdio or localhost HTTP" --> runtime["portal-mcp runtime"]
+    runtime --> manifests["services/*.yaml"]
+    runtime --> store["sessions/ (encrypted)"]
+    runtime -- "HTTP with the session" --> service["The service's web API"]
+    runtime -- "opens and watches" --> browser["Visible browser window<br/>(you log in here)"]
+    creator["portal-mcp-creator skill"] -- "writes manifests" --> manifests
+    creator -- "guided recording" --> browser
+```
+
+The skill creates manifests. The runtime turns them into tools. The browser is only used for logging in and recording, and you control the login.
+
+## Login and a tool call
+
+```mermaid
+sequenceDiagram
+    participant C as MCP client
+    participant R as Runtime
+    participant K as Session store
+    participant B as Browser window
+    participant S as Service
+    C->>R: call example_list_invoices
+    R->>K: load session
+    alt no valid session
+        R->>B: open login_url, notify the user
+        B->>S: user logs in
+        R->>S: poll session check until 200
+        R->>K: save encrypted session
+        R-->>C: "log in and call again" (if not done within ~20 s)
+    end
+    R->>S: GET /api/invoices with session
+    S-->>R: JSON
+    R->>R: pick fields, redact, cache
+    R-->>C: result
+```
+
+## Creating a service (skill pipeline)
+
+```mermaid
+flowchart TD
+    A[Scope: which service and functions] --> B[Recon without login]
+    B --> C[Guided recording<br/>you log in, GET only after login]
+    C --> D[Analysis: path templates, fields, pagination]
+    D --> E[Catalog: read / file, sensitive fields]
+    E --> F{You choose tools}
+    F --> G[Generate manifest, you approve]
+    G --> H[Verify tools against recording]
+    H --> I[Delete recordings, commit manifest]
+```
+
 ## Where your data lives
 
 Data is kept outside the plugin, so updates never remove it. The location follows your OS conventions (`platformdirs`):

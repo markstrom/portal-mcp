@@ -53,8 +53,8 @@ def create_app() -> Starlette:
         csrf = secrets.token_urlsafe(16)
         sessions[sid] = csrf
         response = RedirectResponse("/", status_code=303)
-        response.set_cookie("sid", sid, httponly=True, samesite="lax", path="/")
-        response.set_cookie("csrf", csrf, httponly=False, samesite="lax", path="/")
+        response.set_cookie("sid", sid, httponly=True, samesite="lax", path="/", max_age=3600)
+        response.set_cookie("csrf", csrf, httponly=False, samesite="lax", path="/", max_age=3600)
         return response
 
     async def session_check(request: Request) -> Response:
