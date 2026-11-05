@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 import stat
 
 import httpx
@@ -262,7 +263,8 @@ async def test_audit_log_is_private_and_records_call_and_response(h):
     async with create_connected_server_and_client_session(h.server, elicitation_callback=accept) as client:
         code = _json(await client.call_tool("mockportal_prepare_create_report", {"title": "Rapport"}))["code"]
         await client.call_tool("mockportal_confirm_create_report", {"code": code})
-    assert stat.S_IMODE(os.stat(h.paths.audit_log).st_mode) == 0o600
+    if sys.platform != "win32":  # POSIX file modes; Windows protects the user profile by ACLs
+        assert stat.S_IMODE(os.stat(h.paths.audit_log).st_mode) == 0o600
     executed = [json.loads(line) for line in h.paths.audit_log.read_text().splitlines()][-1]
     assert executed["event"] == "executed"
     assert executed["service"] == "mockportal" and executed["tool"] == "create_report"

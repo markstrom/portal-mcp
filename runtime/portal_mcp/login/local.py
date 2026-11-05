@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import socket
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -106,6 +107,24 @@ def _sandboxed(options: dict[str, Any]) -> dict[str, Any]:
 
 
 def _pid_alive(pid: int) -> bool:
+    """Is a process with this id running? Never sends it a signal that could stop it."""
+    if sys.platform == "win32":
+        # os.kill on Windows terminates the process, so ask the process table instead.
+        import ctypes
+
+        process_query_limited_information = 0x1000
+        still_active = 259
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+        if not handle:
+            return ctypes.get_last_error() == 5  # access denied: it exists
+        try:
+            code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return True
+            return code.value == still_active
+        finally:
+            kernel32.CloseHandle(handle)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

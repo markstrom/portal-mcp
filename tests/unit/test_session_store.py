@@ -1,4 +1,5 @@
 import os
+import sys
 import stat
 
 import pytest
@@ -28,7 +29,8 @@ def test_file_is_encrypted_and_private(store, paths):
     store.save("svc", "default", _session())
     path = paths.sessions / "svc__default.bin"
     assert b"abc" not in path.read_bytes()
-    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    if sys.platform != "win32":  # POSIX file modes; Windows protects the user profile by ACLs
+        assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
 
 
 def test_missing_session_returns_none(store):

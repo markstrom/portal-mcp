@@ -221,7 +221,7 @@ def test_no_code_starts_a_browser_outside_the_sandboxed_launcher():
     for path in list((ROOT / "runtime").rglob("*.py")) + list((ROOT / "skills").rglob("*.py")):
         for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
             if pattern.search(line):
-                offenders.append(f"{path.relative_to(ROOT)}:{number}")
+                offenders.append(f"{path.relative_to(ROOT).as_posix()}:{number}")
     # exactly one place starts a browser: _launch, which always turns the sandbox on
     assert len(offenders) == 1 and offenders[0].startswith("runtime/portal_mcp/login/local.py:"), offenders
 
