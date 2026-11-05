@@ -253,6 +253,8 @@ The runtime shows a desktop notification when a login is waiting, when a login i
 
 ### Logging in
 
+When the creator skill records a service, every recording starts with a clean, temporary browser profile, checks that the login is really verified (only a 200 from `session.check` counts, and a check that answers 200 without a login is refused), and only then lists the service's menu links for you to choose from. If a service rejects a request because its headers are too large (usually too many cookies), the plugin says so, shows the cookies for the service's host by name and count only, and suggests a clean profile; `forget_session` with `browser_profile: true` deletes the runtime's browser profile.
+
 Many services log in through another host, for example an identity provider or an account service on its own address. List such hosts in `login_hosts`, as plain host names. When the creator skill records a service, a login host is allowed only while you log in, only over https, and is blocked after login. The saved session only ever holds cookies for the `base_url` host. Hosts are never added automatically: if a recording is stopped by an unknown host, the skill asks you whether you trust it.
 
 When a tool needs a session and none is valid, a browser window opens on `login_url` and a desktop notification asks you to log in. The runtime checks the session check endpoint and captures the session once you are logged in. A tool call waits up to about 20 seconds; if you are not done by then, it tells you to finish in the window and call again. The login continues in the background. Only one login runs at a time.

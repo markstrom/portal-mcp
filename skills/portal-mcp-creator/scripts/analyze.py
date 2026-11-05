@@ -242,6 +242,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("har", type=Path)
     parser.add_argument("--host", required=True, help="the service host, for example app.example.com")
     parser.add_argument("--writes", type=Path, help="captured_writes.json from record.py")
+    parser.add_argument("--keep-har", action="store_true",
+                        help="keep the HAR file; by default it is deleted once the catalog is written")
     parser.add_argument(
         "--show-values-for",
         default="",
@@ -256,6 +258,11 @@ def main(argv: list[str] | None = None) -> None:
         catalog["writes"] = analyze_writes(captured, args.host, shown)
     json.dump(catalog, sys.stdout, indent=2, ensure_ascii=False)
     sys.stdout.write("\n")
+    sys.stdout.flush()
+    # The HAR holds cookies and page content. It is not needed once the catalog exists.
+    if not args.keep_har:
+        args.har.unlink(missing_ok=True)
+        print(f"[portal-mcp] Deleted {args.har} (it held cookies and page content).", file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -10,11 +10,12 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 
 from .config import has_display
+from .diagnostics import header_too_large_message, is_header_too_large
 from .login.base import LoginError, LoginManager
 from .manifest import Manifest, ToolConfig
 from .session_store import SessionStore, StoredSession
@@ -275,6 +276,13 @@ class ServiceClient:
 
         if len(response.content) > MAX_RESPONSE_BYTES:
             raise ServiceError(f"response from {self.name} is larger than {MAX_RESPONSE_BYTES} bytes")
+        if is_header_too_large(response.status_code, response.text[:4000], response.reason_phrase):
+            host = urlsplit(self.manifest.base_url).hostname or self.manifest.base_url
+            raise ServiceError(
+                header_too_large_message(self.name, host, session.cookies)
+                + " Call forget_session with browser_profile set to true, then call the tool again "
+                "to log in with a clean profile."
+            )
         return response
 
     def _shape_json(self, tool: ToolConfig, response: httpx.Response) -> Any:

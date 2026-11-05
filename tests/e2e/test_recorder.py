@@ -59,12 +59,15 @@ async def test_recorder_blocks_and_captures_writes(tmp_path, mock_base_url, monk
         out,
         timeout=30,
         profile="default",
+        reuse_profile=True,  # the test logged in to the persistent profile above
     )
 
-    assert summary["logged_in"] is True
+    assert summary["login_verified"] is True
+    assert summary["profile"] == {"clean": False, "reused": True}
     assert summary["captured_writes"] == 2
-    reasons = {b["path"]: b["reason"] for b in summary["blocked"]}
-    assert "side effect" in reasons["/api/invoices/inv-001/delete"]
+    reasons = {b["path"]: b["reason"] for b in summary["blocked_other"]}
+    # a side-effect path is refused before the browser even asks for it
+    assert {v["path"]: v["status"] for v in summary["visited"]}["/api/invoices/inv-001/delete"] == "refused"
     assert "POST is blocked" in reasons["/api/payments"]
 
     captured = json.loads((out / "captured_writes.json").read_text())
@@ -88,3 +91,67 @@ async def test_recorder_blocks_and_captures_writes(tmp_path, mock_base_url, monk
     assert kinds["/api/payments"]["values"] == {}  # values hidden by default
     assert kinds["/api/reports"]["encoding"] == "json"
     assert "Form title" not in json.dumps(writes)
+
+
+async def test_recorder_uses_a_clean_profile_by_default(tmp_path, mock_base_url, monkeypatch):
+    import record
+
+    from portal_mcp.manifest import load_manifest_file
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("PORTAL_MCP_HOME", str(home))
+    monkeypatch.setenv("PORTAL_MCP_HEADLESS", "1")
+    manifest_path = write_manifest(home / "services", "mockportal", mock_manifest_yaml(mock_base_url))
+    persistent = home / "profiles" / "mockportal" / "default"
+    await _seed_login(persistent, mock_base_url)  # a logged-in persistent profile exists
+
+    out = tmp_path / "rec"
+    summary = await record.record(load_manifest_file(manifest_path), [], out, timeout=3, profile="default",
+                                  poll_seconds=0.5)
+    # The clean profile does not have the persistent login, so the login is not verified...
+    assert summary["profile"] == {"clean": True, "reused": False}
+    assert summary["login_verified"] is False
+    assert "not verified" in summary["error"]
+    # ...the temporary profile is gone, and the persistent one was not touched.
+    assert not (out / "browser-profile").exists()
+    assert persistent.is_dir()
+
+
+async def test_discover_lists_menu_links_after_login_and_waits_for_the_choice(tmp_path, mock_base_url, monkeypatch):
+    import asyncio
+
+    import record
+
+    from portal_mcp.manifest import load_manifest_file
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("PORTAL_MCP_HOME", str(home))
+    monkeypatch.setenv("PORTAL_MCP_HEADLESS", "1")
+    manifest_path = write_manifest(home / "services", "mockportal", mock_manifest_yaml(mock_base_url))
+    await _seed_login(home / "profiles" / "mockportal" / "default", mock_base_url)
+    out = tmp_path / "rec"
+
+    async def choose():
+        links_file = out / "menu_links.json"
+        for _ in range(300):
+            if links_file.exists():
+                break
+            await asyncio.sleep(0.1)
+        found = json.loads(links_file.read_text())
+        paths = [link["path"] for link in found["links"]]
+        assert "/invoices-page" in paths and "/profile?tab=1" in paths
+        assert not any("logout" in p or "delete" in p or p.endswith(".pdf") for p in paths)
+        assert found["dropped"]["other host"] == 1
+        (out / "visit.json").write_text(json.dumps(["/invoices-page", "/api/logout"]))
+
+    chooser = asyncio.create_task(choose())
+    summary = await record.record(
+        load_manifest_file(manifest_path), [], out, timeout=30, profile="default",
+        reuse_profile=True, discover=True, choice_timeout=30,
+    )
+    await chooser
+    assert summary["login_verified"] is True
+    assert summary["menu_links"]["count"] >= 3
+    visited = {v["path"]: v["status"] for v in summary["visited"]}
+    assert "/invoices-page" in visited
+    assert visited["/api/logout"] == "refused"  # a side-effect choice is never visited

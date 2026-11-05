@@ -12,6 +12,7 @@ import copy
 import json
 import logging
 import os
+import shutil
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -185,10 +186,22 @@ class Registry:
             ),
             types.Tool(
                 name="forget_session",
-                description="Delete the local session for a service without contacting the service.",
+                description=(
+                    "Delete the local session for a service without contacting the service. With "
+                    "browser_profile, also delete the browser profile (cookies and device memory) so the "
+                    "next login starts clean; the service may then ask to recognize the device again."
+                ),
                 inputSchema={
                     "type": "object",
-                    "properties": {"service": service_prop, "profile": {"type": "string"}},
+                    "properties": {
+                        "service": service_prop,
+                        "profile": {"type": "string"},
+                        "browser_profile": {
+                            "type": "boolean",
+                            "default": False,
+                            "description": "also delete the browser profile, so the next login starts clean",
+                        },
+                    },
                     "required": ["service"],
                 },
                 annotations=types.ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False),
@@ -326,8 +339,19 @@ class Registry:
             return self.status()
         client = self._client(arguments.get("service"))
         if name == "forget_session":
-            removed = client.forget_session(arguments.get("profile"))
-            return {"service": client.name, "removed_profiles": removed}
+            profile = arguments.get("profile")
+            removed = client.forget_session(profile)
+            result: dict[str, Any] = {"service": client.name, "removed_profiles": removed}
+            if arguments.get("browser_profile"):
+                names = [client.resolve_profile(profile)] if profile else client.manifest.profiles
+                deleted = []
+                for name_ in names:  # names come from the manifest, never from free input
+                    directory = self._paths.profiles / client.name / name_
+                    if directory.exists():
+                        shutil.rmtree(directory, ignore_errors=True)
+                        deleted.append(name_)
+                result["deleted_browser_profiles"] = deleted
+            return result
         if name == "logout":
             profile = arguments.get("profile")
             remote = await client.logout(profile)

@@ -86,7 +86,7 @@ async def test_local_provider_times_out_and_cleans_up(paths: Paths, mock_base_ur
     monkeypatch.setenv("PORTAL_MCP_HEADLESS", "1")
     manifest = Manifest.model_validate(yaml.safe_load(mock_manifest_yaml(mock_base_url)))
     provider = LocalLoginProvider(paths, timeout_seconds=3, poll_seconds=0.2)
-    with pytest.raises(LoginError, match="timed out"):
+    with pytest.raises(LoginError, match=r"not verified within 3 seconds.*answered: 401"):
         await provider.login(manifest, "default")
     assert (paths.profiles / "mockportal" / "default").is_dir()
 

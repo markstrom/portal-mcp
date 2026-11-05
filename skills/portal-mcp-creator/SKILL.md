@@ -38,22 +38,33 @@ This looks for public API docs (OpenAPI/Swagger) and extracts endpoint candidate
 ### 3. Static analysis
 Use the `endpoints` in `recon.json` as hints for paths, methods and fields. Endpoints found with POST, PUT, PATCH or DELETE are write candidates for step 6.
 
-### 4. Login and recording
-Write a minimal manifest draft first (name, base_url, login_url, session, empty tools) and save it as `<name>.yaml` in `services_dir` from the `list_services` tool. Then:
+### 4. Login first, then discovery
+Write a minimal manifest draft first (name, base_url, login_url, session, empty tools) and save it as `<name>.yaml` in `services_dir` from the `list_services` tool. Nothing can be explored before the login works, so make the login reliable first.
+
+Start the recording in discovery mode, in the background, because it waits for the user twice (the login, then the choice of pages):
 
 ```bash
 uv run --project "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/skills/portal-mcp-creator/scripts/record.py" \
-  --service <name> --visit /path/to/page --visit /another/page --out <recording dir>
+  --service <name> --discover --out <recording dir>
 ```
 
-Tell the user a browser window is opening and that they should log in there (BankID, password or SSO, whatever the service uses). The script waits up to 10 minutes, then visits the paths you give. Ask the user which pages to visit if you do not know them.
+What happens, and what to tell the user:
+1. **Preflight.** The session check is called without cookies. If it answers 200 even when logged out, the run stops: the check cannot verify a login. Find a better check (step 10) before going on. If it redirects, the run warns and continues; only a 200 counts as logged in.
+2. **Clean profile.** Every run uses a clean, temporary browser profile that is deleted afterwards. Use `--reuse-profile` only when the user explicitly asks to keep an earlier login.
+3. **Login.** Status lines on stderr say when the browser starts and when the window is open. Tell the user to log in in the window (BankID, password or SSO). The run waits up to 10 minutes. If the browser does not start, or the login is not verified in time, the summary's `error` says why (for example what the check answered). Report it as written.
+4. **Menu links, only after "Login verified".** The run writes `<recording dir>/menu_links.json`: links on the service's start page that stay on the service's host and look like reading. Logout, delete and similar links and file downloads are left out. Show the user the list (path and link text) and ask which pages to visit. Write their choice as a JSON list of paths to `<recording dir>/visit.json` (`[]` for none). The run visits only those, and refuses any path that looks like a side effect.
 
-The script prints a summary: visited pages, blocked requests with host and reason, the number of captured writes, and `blocked_navigation_hosts`. Show the user the blocked list. If a read function needs a request that was blocked, say so and ask how to proceed. Do not lift the guard.
+When the run ends, it prints a JSON summary:
+- `login_verified`, `session_check` (what the check answered when logged out), `profile`.
+- `blocked_tracking`: third-party tracking, analytics, monitoring and consent hosts. Blocking them is expected; mention them only briefly.
+- `blocked_other`: other blocked requests, with host and reason. These may be needed by the service (for example a content host). Show them to the user. If a read function needs one, say so and ask how to proceed. Do not lift the guard.
+- `blocked_navigation_hosts`: hosts that pages tried to navigate to. If the login could not finish and a host is listed here, the service probably logs in through it. Tell the user the host name exactly as reported and ask whether they recognize and trust it as the service's login. Only on a clear yes, add it to `login_hosts` and run again. A host the user does not recognize stays blocked.
+- `header_too_large`: set when the service rejected the request because its headers (cookies) were too large. It shows the cookies for the service's host by name pattern and count, never values. Tell the user that, and run again with a clean profile (the default). For the runtime, `forget_session` with `browser_profile: true` gives the next login a clean profile.
 
-If the login cannot finish and `blocked_navigation_hosts` lists a host, the service probably logs in through that host. Tell the user the host name exactly as reported and ask whether they recognize and trust it as the service's login (for example the service's own account service or its identity provider). Only on a clear yes, add it to `login_hosts` in the manifest and run the recording again. A host the user does not recognize stays blocked.
+Pages you already know can be passed directly with `--visit /path` (repeatable); they are visited after the login is verified.
 
 ### 5. Exploration
-Repeat step 4 with more `--visit` paths when the user wants more read functions. Pagination: visit a second page of a list if there is one, so the analysis sees `page` or `offset` parameters.
+Repeat step 4 for more read functions. Pagination: visit a second page of a list if there is one, so the analysis sees `page` or `offset` parameters.
 
 ### 6. Writes without performing them
 For each write function the user wants, have the user fill in and submit the form while writes are captured:
@@ -62,6 +73,8 @@ For each write function the user wants, have the user fill in and submit the for
 uv run --project "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/skills/portal-mcp-creator/scripts/record.py" \
   --service <name> --visit /path/to/form/page --interactive --out <recording dir>
 ```
+
+Every run starts with a clean profile, so the user logs in again. To avoid a second login, combine this with step 4 in one run: `--discover --interactive` lists the menu links, visits the chosen pages, and then keeps the window open for forms.
 
 Tell the user: "Fill in the form as you normally would and press submit. Nothing is sent: the request is stopped in the browser and only its format is saved. Use made-up values where you can. Close the window when you are done." The submitted requests are saved in `<recording dir>/captured_writes.json`. The page may show an error after submit; that is expected.
 
@@ -78,7 +91,7 @@ Real writes still go to the service's own host only, and side-effect GET links s
 uv run --project "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/skills/portal-mcp-creator/scripts/analyze.py" \
   <recording dir>/recording.har --host <host> --writes <recording dir>/captured_writes.json > catalog.json
 ```
-The catalog holds structure only: path templates, query parameter names, pagination hints, response and body field names with types, and flags. Values are hidden. For fixed fields (hidden inputs such as a form type), you may show their values with `--show-values-for field1,field2` after checking that they are not personal data or tokens.
+The catalog holds structure only: path templates, query parameter names, pagination hints, response and body field names with types, and flags. Values are hidden. The analysis deletes the HAR file when it is done, because it holds cookies and page content; add `--keep-har` only if you must analyze it again. For fixed fields (hidden inputs such as a form type), you may show their values with `--show-values-for field1,field2` after checking that they are not personal data or tokens.
 
 For writes, look at:
 - `encoding`: `json` or `form` (sets `body_encoding`). `multipart` is not supported in this version.
@@ -202,7 +215,7 @@ Write and binding tools:
 If a tool fails, read the error, fix the manifest, and retry. Do not ask the user to share response bodies; describe the field names instead.
 
 ### 12. Cleanup
-Delete the recording directory (HAR and `captured_writes.json`). Then commit the manifest and its baseline in the local manifest git repo (`git -C <services dir> add <name>.yaml <name>.schemas.json && git -C <services dir> commit`, creating the repo with `git init` the first time). Never commit recordings, session files or the audit log.
+Delete the recording directory (`captured_writes.json`, `menu_links.json`, `visit.json`, and the HAR if it was kept). Then commit the manifest and its baseline in the local manifest git repo (`git -C <services dir> add <name>.yaml <name>.schemas.json && git -C <services dir> commit`, creating the repo with `git init` the first time). Never commit recordings, session files or the audit log.
 
 ### 13. Summary
 Tell the user which tools exist now, which were left out and why, which limits apply, and where the manifest and the audit log (`audit.log` in the data directory) are.

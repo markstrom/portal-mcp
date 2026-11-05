@@ -1,6 +1,7 @@
 """A small local web service that imitates a customer portal with a login form and cookie session.
 
 Endpoints:
+  GET  /                       start page with a menu (after login)
   GET  /login                  login form (test credentials in data.py)
   POST /login                  sets the session cookie `sid` and the CSRF cookie `csrf`
   GET  /api/session            200 when the session is valid, 401 otherwise
@@ -69,6 +70,29 @@ def create_app() -> Starlette:
         if not _sid_valid(request):
             return JSONResponse({"error": "not logged in"}, status_code=401)
         return JSONResponse({"user": USERNAME})
+
+    async def home(request: Request) -> Response:
+        if not _sid_valid(request):
+            return RedirectResponse("/login", status_code=302)
+        return HTMLResponse(
+            "<!doctype html><title>Start</title>"
+            "<header><nav>"
+            '<a href="/invoices-page">Invoices</a>'
+            '<a href="/reports/new">New report</a>'
+            '<a href="/api/logout">Log out</a>'
+            '<a href="/messages/delete-all">Delete all messages</a>'
+            '<a href="https://other.example.org/help">Help</a>'
+            '<a href="/files/terms.pdf">Terms (PDF)</a>'
+            "</nav></header>"
+            '<main><a href="/invoices-page#top">Invoices again</a><a href="/profile?tab=1">Profile</a></main>'
+        )
+
+    async def too_large(request: Request) -> Response:
+        # What an IIS-style server answers when the Cookie header is too large.
+        return HTMLResponse(
+            "<h2>Bad Request - Request Too Long</h2><p>HTTP Error 400. The size of the request headers is too long.</p>",
+            status_code=400,
+        )
 
     async def page_check(request: Request) -> Response:
         # Like a sign-in system that redirects to the login and sets a new nonce cookie each time.
@@ -162,12 +186,14 @@ def create_app() -> Starlette:
 
     return Starlette(
         routes=[
+            Route("/", home, methods=["GET"]),
             Route("/login", login_form, methods=["GET"]),
             Route("/reports/new", report_form, methods=["GET"]),
             Route("/payments/new", payment_form, methods=["GET"]),
             Route("/login", login_submit, methods=["POST"]),
             Route("/api/session", session_check, methods=["GET"]),
             Route("/account", page_check, methods=["GET"]),
+            Route("/api/too-large", too_large, methods=["GET"]),
             Route("/api/invoices", list_invoices, methods=["GET"]),
             Route("/api/invoices/{invoice_id}/pdf", invoice_pdf, methods=["GET"]),
             Route("/api/invoices/{invoice_id}/delete", delete_invoice, methods=["GET"]),

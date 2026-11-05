@@ -122,3 +122,34 @@ async def test_self_test_uses_the_given_profile(setup):
         out = _json(await client.call_tool("self_test", {"service": "mockportal", "profile": "second"}))
     assert out["profile"] == "second"
     assert setup["provider"].profiles == ["second"]
+
+
+async def test_header_too_large_from_the_service_is_a_clear_tool_error(paths, store, downloads, mock_base_url):
+    extra = """  - name: too_large
+    kind: read
+    method: GET
+    path: /api/too-large
+"""
+    provider = ProfileLogin()
+    write_manifest(paths.services, "mockportal", mock_manifest_yaml(mock_base_url, extra_tools=extra))
+    registry = Registry(paths, store, LoginManager(provider, store), downloads)
+    server, _ = build_server(registry)
+    async with create_connected_server_and_client_session(server) as client:
+        result = await client.call_tool("mockportal_too_large", {})
+    assert result.isError
+    text = result.content[0].text
+    assert "headers were too large" in text and "browser_profile" in text
+    session = store.load("mockportal", "default")
+    assert all(c["value"] not in text for c in session.cookies)
+
+
+async def test_forget_session_can_delete_the_browser_profile(setup):
+    browser_profile = setup["paths"].profiles / "mockportal" / "second"
+    browser_profile.mkdir(parents=True)
+    (browser_profile / "Cookies").write_text("x")
+    async with create_connected_server_and_client_session(setup["server"]) as client:
+        out = _json(await client.call_tool(
+            "forget_session", {"service": "mockportal", "profile": "second", "browser_profile": True}
+        ))
+    assert out["deleted_browser_profiles"] == ["second"]
+    assert not browser_profile.exists()
