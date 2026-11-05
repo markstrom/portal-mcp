@@ -112,10 +112,3 @@ def test_recon_tells_public_content_from_a_login():
 
     login_page = recon.page_profile('<form><input type="password" name="p"></form>', 200, "https://example.com")
     assert login_page["public_content"] is False and login_page["login_found"] is True
-
-
-def test_recon_reads_robots_rules_for_all_crawlers():
-    rules = recon.robots_rules("User-agent: *\nDisallow: /search/\nDisallow: /api/\n\nUser-agent: other\nDisallow: /\n",
-                               "https://example.com")
-    assert rules == {"found": True, "start_page_allowed": True, "disallowed_for_all": ["/search/", "/api/"]}
-    assert recon.robots_rules("User-agent: *\nDisallow: /\n", "https://example.com")["start_page_allowed"] is False

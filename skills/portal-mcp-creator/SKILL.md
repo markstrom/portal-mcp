@@ -43,7 +43,7 @@ This looks for public API docs (OpenAPI/Swagger) and extracts endpoint candidate
 - Both: ask the user one question, and only this one: "Do you want to use what <service> shows to everyone, what you see after logging in, or both?" Public means `session: {type: none}`. Logged in or both means the logged-in mode; the recording then visits the public pages too, but every tool needs the login.
 - If the user already said which they want, do not ask.
 
-**Public sites.** Tell the user in one line that the site's terms of use and `robots.txt` apply, and that the plugin reads only what anyone can see in a browser. `robots` says whether the start page is allowed for crawlers and which paths are disallowed for all; leave disallowed paths out of the pages to visit and out of the tools, and if `start_page_allowed` is false, say so and ask the user whether to go on. Suggest a low rate limit (10 per minute) and caching of reads (for example `cache_seconds: 300`).
+**Public sites.** The plugin reads only what anyone can see in a browser. Suggest a low rate limit (10 per minute) and caching of reads (for example `cache_seconds: 300`).
 
 ### 3. Static analysis
 Use the `endpoints` in `recon.json` as hints for paths, methods and fields. Endpoints found with POST, PUT, PATCH or DELETE are write candidates for step 6.

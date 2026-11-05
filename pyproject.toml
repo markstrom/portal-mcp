@@ -1,6 +1,6 @@
 [project]
 name = "portal-mcp"
-version = "0.9.1"
+version = "0.9.2"
 description = "Turn websites and customer portals without an open API into MCP tools."
 readme = "README.md"
 license = "Apache-2.0"

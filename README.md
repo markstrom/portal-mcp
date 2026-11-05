@@ -1,6 +1,6 @@
 # portal-mcp
 
-[![Version](https://img.shields.io/badge/version-0.9.1-blue)](https://github.com/markstrom/portal-mcp/releases)
+[![Version](https://img.shields.io/badge/version-0.9.2-blue)](https://github.com/markstrom/portal-mcp/releases)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](pyproject.toml)
 [![MCP](https://img.shields.io/badge/MCP-server-8A2BE2)](https://modelcontextprotocol.io)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
@@ -15,7 +15,7 @@
 - Write actions run in two steps and only after you approve them yourself, in a dialog or a local confirmation page. The model cannot approve its own actions.
 - Every write action is logged in a local audit log.
 
-**Status: version 0.9.1.** Runtime with read, file, write and binding tools and human approval; logins through other hosts, BankID and OpenID Connect apps; public sites without login; encrypted sessions and several profiles per service; a recorder that explores pages by itself and captures writes without sending them; `self_test`, desktop notifications, the `portal-mcp-creator` skill and the slash commands. Tested against a local mock service.
+**Status: version 0.9.2.** Runtime with read, file, write and binding tools and human approval; logins through other hosts, BankID and OpenID Connect apps; public sites without login; encrypted sessions and several profiles per service; a recorder that explores pages by itself and captures writes without sending them; `self_test`, desktop notifications, the `portal-mcp-creator` skill and the slash commands. Tested against a local mock service.
 
 ## Requirements
 
@@ -141,7 +141,7 @@ flowchart LR
 
 The skill creates manifests. The runtime turns them into tools. The browser is only used for logging in and recording, and you control the login.
 
-Public sites work too: with `session: {type: none}` there is no login, no session and nothing stored, and tools call the site without cookies. If a site has both public pages and a login, `/portal-mcp:add` asks once which part you want. For public sites the site's terms and `robots.txt` apply; the skill leaves disallowed paths out and suggests a low rate limit.
+Public sites work too: with `session: {type: none}` there is no login, no session and nothing stored, and tools call the site without cookies. If a site has both public pages and a login, `/portal-mcp:add` asks once which part you want. For public sites the skill suggests a low rate limit and caching of reads.
 
 While recording, the plugin explores each page itself: it clicks tabs, expandable sections and "show more" buttons, because many single-page apps load their data only after such a click. It never clicks controls that mean an action (log out, delete, pay, send, save, confirm and similar), submit buttons, unlabeled controls or downloads, and every write a click causes is blocked and captured, never sent.
 

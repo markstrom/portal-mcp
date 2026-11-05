@@ -1,5 +1,5 @@
 """Reconnaissance without logging in: public API docs, endpoints found in the web app's JavaScript,
-whether the site has public content and a login, and what robots.txt says.
+and whether the site has public content and a login.
 
 Usage:
   uv run --project "${CLAUDE_PLUGIN_ROOT}" python recon.py https://app.example.com > recon.json
@@ -14,7 +14,6 @@ import json
 import re
 import sys
 from urllib.parse import urljoin, urlsplit
-from urllib.robotparser import RobotFileParser
 
 import httpx
 
@@ -45,7 +44,6 @@ LOGIN_TEXT = re.compile(
 )
 LOGIN_PATH = re.compile(r"/(login|log-in|signin|sign-in|logga-in|account/login|auth|oauth|connect/authorize)\b",
                         re.IGNORECASE)
-MAX_DISALLOWED = 50
 
 
 def page_profile(html: str, status: int, base_url: str) -> dict:
@@ -70,28 +68,6 @@ def page_profile(html: str, status: int, base_url: str) -> dict:
         "login_found": bool(login_links) or password_form,
         "login_links": login_links,
         "password_form_on_start_page": password_form,
-    }
-
-
-def robots_rules(text: str, base_url: str) -> dict:
-    """What robots.txt allows for any crawler: the start page, and the disallowed paths."""
-    parser = RobotFileParser()
-    parser.parse(text.splitlines())
-    disallowed: list[str] = []
-    applies = False
-    for line in text.splitlines():
-        line = line.split("#", 1)[0].strip()
-        if ":" not in line:
-            continue
-        key, value = (part.strip() for part in line.split(":", 1))
-        if key.lower() == "user-agent":
-            applies = value == "*"
-        elif key.lower() == "disallow" and applies and value and len(disallowed) < MAX_DISALLOWED:
-            disallowed.append(value)
-    return {
-        "found": True,
-        "start_page_allowed": parser.can_fetch("*", base_url.rstrip("/") + "/"),
-        "disallowed_for_all": disallowed,
     }
 
 
@@ -129,9 +105,6 @@ def recon(base_url: str, client: httpx.Client) -> dict:
 
     page = client.get(base + "/")
     result["site"] = page_profile(page.text if page.status_code == 200 else "", page.status_code, base)
-    robots = client.get(base + "/robots.txt")
-    result["robots"] = (robots_rules(robots.text, base) if robots.status_code == 200
-                        else {"found": False, "status": robots.status_code})
     scripts = SCRIPT_SRC.findall(page.text) if page.status_code == 200 else []
     endpoints: dict[tuple[str, str], dict] = {}
     for src in scripts[:MAX_SCRIPTS]:
