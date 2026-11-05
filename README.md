@@ -16,27 +16,98 @@ Create MCP tools for logged-in web services, customer portals and public sites t
 - [`uv`](https://docs.astral.sh/uv/) to run the runtime.
 - Google Chrome (preferred), or Playwright's Chromium: `uv run playwright install chromium`.
 
-## Install as a plugin
+## Install
 
-In Claude Code:
+Pick the way that matches where you use Claude. Everything except the last option installs the whole plugin: the runtime, the `portal-mcp-creator` skill and the `/portal-mcp:*` commands.
+
+| Where you use Claude | Way to install |
+|---|---|
+| Claude Code in a terminal | [Slash commands](#claude-code-in-a-terminal) or [the command line](#the-command-line) |
+| The Claude desktop app, Code tab | [The command line](#the-command-line) or [the app's plugin settings](#the-claude-desktop-app-code-tab) |
+| Claude Code in VS Code or JetBrains | [The command line](#the-command-line) |
+| A team or a project | [Project settings](#a-team-or-a-project) |
+| Working on the plugin itself | [A local clone](#a-local-clone-for-development) |
+| Another MCP client, or the desktop app's chat | [The runtime alone](#the-runtime-alone-as-an-mcp-server) (tools only) |
+
+While the repository is private, every way fetches it with your local git credentials, so only accounts with access can install it. With the GitHub CLI: `gh auth login`, then `gh auth setup-git`.
+
+### Claude Code in a terminal
 
 ```text
 /plugin marketplace add markstrom/portal-mcp
 /plugin install portal-mcp@portal-mcp
 ```
 
-Restart Claude Code if the tools do not show up, then check with `/portal-mcp:list`.
+`/plugin` opens an interactive dialog, so it works only in Claude Code in a terminal.
 
-While the repository is private, Claude Code fetches it with your local git credentials. With the GitHub CLI: `gh auth login`, then `gh auth setup-git`.
+### The command line
 
-From the command line instead:
+Run these in any terminal. Claude Code in a terminal, the desktop app and the IDE extensions share the same installation, so this works for all of them:
 
 ```bash
 claude plugin marketplace add markstrom/portal-mcp
 claude plugin install portal-mcp@portal-mcp
 ```
 
-Remove it again with `claude plugin uninstall portal-mcp@portal-mcp` and `claude plugin marketplace remove portal-mcp`.
+Restart the app or Claude Code afterwards so the plugin is loaded.
+
+### The Claude desktop app, Code tab
+
+The Code tab cannot run `/plugin`. Either use [the command line](#the-command-line) and restart the app, or add the marketplace `markstrom/portal-mcp` in the app's plugin settings and install `portal-mcp` from there.
+
+### A team or a project
+
+Add this to `.claude/settings.json` in a project. Everyone who opens the project in Claude Code and trusts it is offered the plugin:
+
+```json
+{
+  "extraKnownMarketplaces": {
+    "portal-mcp": { "source": { "source": "github", "repo": "markstrom/portal-mcp" } }
+  },
+  "enabledPlugins": { "portal-mcp@portal-mcp": true }
+}
+```
+
+### A local clone, for development
+
+```bash
+git clone https://github.com/markstrom/portal-mcp.git
+claude plugin marketplace add ./portal-mcp
+claude plugin install portal-mcp@portal-mcp
+```
+
+Or load it for one session only, without installing: `claude --plugin-dir ./portal-mcp`.
+
+### The runtime alone, as an MCP server
+
+Other MCP clients can use the runtime directly. You then get the tools of the services you have already added, but not the skill or the `/portal-mcp:*` commands, so new services are added from Claude Code. Clone the repository first, then point the client at it.
+
+For Claude Code without the plugin:
+
+```bash
+claude mcp add portal-mcp -- uv run --quiet --project /path/to/portal-mcp portal-mcp-runtime
+```
+
+For the Claude desktop app's chat, or any client that reads an `mcpServers` file (in the desktop app: Settings, Developer, Edit config):
+
+```json
+{
+  "mcpServers": {
+    "portal-mcp": {
+      "command": "uv",
+      "args": ["run", "--quiet", "--project", "/path/to/portal-mcp", "portal-mcp-runtime"]
+    }
+  }
+}
+```
+
+Clients that connect over HTTP can use `uv run portal-mcp-runtime --http` and the address `http://127.0.0.1:8765/mcp` instead.
+
+### Check, update and remove
+
+- Check: `/portal-mcp:list` shows the loaded services. If the tools do not show up, restart the app or Claude Code.
+- Update: `claude plugin update portal-mcp@portal-mcp`, then restart. In a terminal session, `/plugin` has the same option.
+- Remove: `claude plugin uninstall portal-mcp@portal-mcp` and `claude plugin marketplace remove portal-mcp`. Your services, sessions and downloads stay in the data directory (see [Where your data lives](#where-your-data-lives)) until you delete them.
 
 ## Commands
 
