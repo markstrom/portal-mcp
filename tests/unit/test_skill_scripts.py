@@ -185,3 +185,35 @@ def test_behaviour_without_login_hosts_is_unchanged():
     assert guard.decide("POST", f"https://{HOST}/login", HOST, False).allowed
     assert not guard.decide("GET", f"https://{LOGIN}/authorize", HOST, False).allowed
     assert not guard.decide("POST", f"https://{HOST}/api/x", HOST, True).allowed
+
+
+# ----- suggested session checks ---------------------------------------------
+
+import check_suggest  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "method,url,status,ctype,expected",
+    [
+        ("GET", f"https://{HOST}/api/me", 200, "application/json; charset=utf-8", "/api/me"),
+        ("GET", f"https://{HOST}/api/list?page=1", 200, "application/json", "/api/list?page=1"),
+        ("POST", f"https://{HOST}/api/me", 200, "application/json", None),
+        ("GET", f"https://{HOST}/api/me", 401, "application/json", None),
+        ("GET", f"https://{HOST}/start", 200, "text/html", None),
+        ("GET", "https://other.example.org/api/me", 200, "application/json", None),
+        ("GET", f"https://{HOST}/api/logout", 200, "application/json", None),
+        ("GET", f"https://{HOST}/api/session", 200, "application/json", None),  # the current check
+        ("GET", f"https://{HOST}/config.json", 200, "application/json", "/config.json"),
+        ("GET", f"https://{HOST}/app.js", 200, "application/json", None),
+    ],
+)
+def test_candidate_collection(method, url, status, ctype, expected):
+    assert check_suggest.candidate_from(method, url, status, ctype, HOST, "/api/session") == expected
+
+
+def test_candidate_ranking_prefers_short_paths_without_query_or_ids():
+    ranked = check_suggest.rank([
+        "/api/orders/123456/lines", "/api/list?page=1", "/api/me", "/api/me", "/api/user/profile",
+    ])
+    assert ranked == ["/api/me", "/api/user/profile", "/api/orders/123456/lines", "/api/list?page=1"]
+    assert len(check_suggest.rank([f"/api/x{i}" for i in range(20)])) == check_suggest.MAX_SUGGESTIONS

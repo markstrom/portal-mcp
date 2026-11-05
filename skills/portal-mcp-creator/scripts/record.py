@@ -41,6 +41,7 @@ from urllib.parse import urljoin, urlsplit
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from guard import decide, should_capture  # noqa: E402
+from check_suggest import candidate_from, rank  # noqa: E402
 from links import COLLECT_JS, filter_menu_links, valid_visit  # noqa: E402
 
 from portal_mcp.config import default_paths  # noqa: E402
@@ -102,6 +103,7 @@ async def record(
     choice_timeout: float = 900,
     poll_seconds: float = 2.0,
     check_candidates: list[str] | tuple[str, ...] = (),
+    suggest_check: bool = False,
 ) -> dict:
     from playwright.async_api import async_playwright
 
@@ -138,6 +140,7 @@ async def record(
         "blocked_navigation_hosts": undeclared_hosts,
         "header_too_large": None,
         "check_candidates": [],
+        "suggested_session_checks": None,
         "captured_writes": 0,
         "real_writes_allowed": allow_real_writes,
         "error": None,
@@ -164,6 +167,9 @@ async def record(
         status(f"Candidate session check {path}: {result.status or result.error} when logged out.")
     if preflight.verdict == "redirects":
         status("Warning: " + preflight.explain(manifest))
+    # Look for a better check unless the current one already answers 401/403 when logged out.
+    suggest = suggest_check or preflight.verdict != "rejects"
+    seen_json: list[str] = []
     status(f"Using a {'clean, temporary' if temporary_profile else 'reused'} browser profile.")
 
     try:
@@ -203,6 +209,13 @@ async def record(
                     await route.abort("blockedbyclient")
 
                 async def inspect_response(response):
+                    if suggest and state["logged_in"]:
+                        found = candidate_from(
+                            response.request.method, response.url, response.status,
+                            response.headers.get("content-type"), service_host, manifest.session.check,
+                        )
+                        if found is not None:
+                            seen_json.append(found)
                     if state["header_too_large"] is not None:
                         return
                     if (urlsplit(response.url).hostname or "").lower() != service_host:
@@ -304,6 +317,30 @@ async def record(
                     except Exception as exc:  # keep going with the other pages
                         summary["visited"].append({"path": path, "status": f"error: {type(exc).__name__}"})
 
+                # 6. Suggested session checks: JSON endpoints the pages loaded, tested both ways.
+                if suggest:
+                    picks = [c for c in rank(seen_json) if c not in {e.get("path") for e in candidates}]
+                    if picks:
+                        cookies = await context.cookies([manifest.base_url])
+                        agent = await _user_agent(page)
+                        tested = []
+                        for path in picks:
+                            trial = manifest_with_check(manifest, path)
+                            tested.append({
+                                "path": path,
+                                "logged_in": await check_status(trial, cookies, user_agent=agent),
+                                "logged_out": await preflight_check(trial),
+                            })
+                        reports = [_candidate_report(entry) for entry in tested]
+                        reports.sort(key=lambda r: not r["usable"])
+                        summary["suggested_session_checks"] = reports
+                        usable = [r["path"] for r in reports if r["usable"]]
+                        status(f"Suggested session checks: {len(usable)} usable of {len(reports)} tested"
+                               + (f" (best: {usable[0]})." if usable else "."))
+                    else:
+                        summary["suggested_session_checks"] = []
+                        status("No JSON endpoints were seen after login; visit more pages to get suggestions.")
+
                 if interactive:
                     status(
                         "Interactive mode: fill in and submit the forms in the browser window. "
@@ -373,6 +410,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--discover", action="store_true",
                         help="after a verified login, list menu links and wait for visit.json")
     parser.add_argument("--choice-timeout", type=float, default=900)
+    parser.add_argument("--suggest-check", action="store_true",
+                        help="suggest session checks from the recording even if the current one answers 401")
     parser.add_argument("--check-candidate", action="append", default=[],
                         help="an endpoint to try as session.check, logged out and logged in (repeatable)")
     parser.add_argument("--reuse-profile", action="store_true",
@@ -398,6 +437,7 @@ def main(argv: list[str] | None = None) -> None:
         discover=args.discover,
         choice_timeout=args.choice_timeout,
         check_candidates=args.check_candidate,
+        suggest_check=args.suggest_check,
     ))
     json.dump(summary, sys.stdout, indent=2, ensure_ascii=False)
     sys.stdout.write("\n")

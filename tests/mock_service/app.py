@@ -85,7 +85,13 @@ def create_app() -> Starlette:
             '<a href="/files/terms.pdf">Terms (PDF)</a>'
             "</nav></header>"
             '<main><a href="/invoices-page#top">Invoices again</a><a href="/profile?tab=1">Profile</a></main>'
+            # Like a single-page app: the page loads its data as JSON.
+            "<script>fetch('/api/invoices?page=1'); fetch('/api/invoices'); fetch('/api/public-info');</script>"
         )
+
+    async def public_info(request: Request) -> Response:
+        # JSON that answers 200 for everyone: no good as a session check.
+        return JSONResponse({"opening_hours": "8-17"})
 
     async def too_large(request: Request) -> Response:
         # What an IIS-style server answers when the Cookie header is too large.
@@ -194,6 +200,7 @@ def create_app() -> Starlette:
             Route("/api/session", session_check, methods=["GET"]),
             Route("/account", page_check, methods=["GET"]),
             Route("/api/too-large", too_large, methods=["GET"]),
+            Route("/api/public-info", public_info, methods=["GET"]),
             Route("/api/invoices", list_invoices, methods=["GET"]),
             Route("/api/invoices/{invoice_id}/pdf", invoice_pdf, methods=["GET"]),
             Route("/api/invoices/{invoice_id}/delete", delete_invoice, methods=["GET"]),

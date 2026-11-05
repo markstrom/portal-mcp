@@ -188,3 +188,47 @@ async def test_check_candidates_are_tried_logged_out_and_logged_in(tmp_path, moc
 
     assert report["/api/logout"]["usable"] is False and "side effect" in report["/api/logout"]["reason"]
     assert report["https://other.example.org/x"]["usable"] is False
+
+
+async def test_recording_suggests_a_session_check_when_the_current_one_redirects(tmp_path, mock_base_url, monkeypatch):
+    import record
+
+    from portal_mcp.manifest import load_manifest_file
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("PORTAL_MCP_HOME", str(home))
+    monkeypatch.setenv("PORTAL_MCP_HEADLESS", "1")
+    text = mock_manifest_yaml(mock_base_url).replace("check: /api/session", "check: /account")
+    manifest_path = write_manifest(home / "services", "mockportal", text)
+    await _seed_login(home / "profiles" / "mockportal" / "default", mock_base_url)
+
+    summary = await record.record(
+        load_manifest_file(manifest_path), ["/"], tmp_path / "rec", timeout=30, profile="default",
+        reuse_profile=True,
+    )
+    assert summary["session_check"]["verdict"] == "redirects"
+    suggestions = summary["suggested_session_checks"]
+    by_path = {s["path"]: s for s in suggestions}
+    assert suggestions[0]["path"] == "/api/invoices" and suggestions[0]["usable"] is True
+    assert by_path["/api/invoices"]["logged_out"]["status"] == 401
+    assert by_path["/api/invoices"]["logged_in"]["status"] == 200
+    assert by_path["/api/public-info"]["usable"] is False
+    assert "200 even when logged out" in by_path["/api/public-info"]["reason"]
+
+
+async def test_no_suggestions_when_the_current_check_already_answers_401(tmp_path, mock_base_url, monkeypatch):
+    import record
+
+    from portal_mcp.manifest import load_manifest_file
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("PORTAL_MCP_HOME", str(home))
+    monkeypatch.setenv("PORTAL_MCP_HEADLESS", "1")
+    manifest_path = write_manifest(home / "services", "mockportal", mock_manifest_yaml(mock_base_url))
+    await _seed_login(home / "profiles" / "mockportal" / "default", mock_base_url)
+    summary = await record.record(
+        load_manifest_file(manifest_path), ["/"], tmp_path / "rec", timeout=30, profile="default",
+        reuse_profile=True,
+    )
+    assert summary["session_check"]["verdict"] == "rejects"
+    assert summary["suggested_session_checks"] is None
