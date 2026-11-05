@@ -278,6 +278,7 @@ Logs go to stderr only.
 ## Security notes
 
 - Passwords are never handled by this software. Logging in happens in a window you can see.
+- The browser always runs with Chrome's sandbox on. If it cannot start with the sandbox, the login fails with an error instead of starting without it.
 - Session files are encrypted with a key stored in the system keyring and have mode 0600.
 - The HTTP transport only binds to localhost.
 - Read results can be trimmed with `pick` and `redact` before they reach the model.

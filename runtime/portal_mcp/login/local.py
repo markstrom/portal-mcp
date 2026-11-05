@@ -60,22 +60,45 @@ class LocalLoginProvider:
                 await context.close()
 
 
+SANDBOX_FLAG = "--no-sandbox"
+
+
+def _sandboxed(options: dict[str, Any]) -> dict[str, Any]:
+    """Launch options with Chrome's sandbox always on.
+
+    Playwright adds --no-sandbox unless chromium_sandbox is set. Logins to banks and other
+    sensitive services must never run without the sandbox, so callers cannot turn it off.
+    """
+    options = dict(options)
+    if options.pop("chromium_sandbox", True) is not True:
+        raise LoginError("the browser sandbox cannot be turned off")
+    options["args"] = [a for a in options.pop("args", None) or [] if a != SANDBOX_FLAG]
+    options["chromium_sandbox"] = True
+    return options
+
+
 async def _launch(playwright: Any, profile_dir: Path, headless: bool, **options: Any) -> Any:
     """Prefer the installed Google Chrome. Fall back to Playwright's Chromium.
 
+    Both are started with Chrome's sandbox on; there is no fallback without it.
     Extra options are passed to Playwright (the recorder uses them for HAR output).
     """
+    options = _sandboxed(options)
     try:
         return await playwright.chromium.launch_persistent_context(
             str(profile_dir), channel="chrome", headless=headless, **options
         )
     except Exception as chrome_error:
-        log.info("Google Chrome not usable (%s); using Playwright Chromium", chrome_error)
+        log.info("Google Chrome not usable with the sandbox on (%s); trying Playwright Chromium", chrome_error)
+        first_error = chrome_error
     try:
         return await playwright.chromium.launch_persistent_context(str(profile_dir), headless=headless, **options)
     except Exception as exc:
         raise LoginError(
-            "no browser available. Install Google Chrome, or run: uv run playwright install chromium"
+            "could not start a browser with Chrome's sandbox on. "
+            f"Google Chrome: {first_error}. Playwright Chromium: {exc}. "
+            "Install Google Chrome, or run: uv run playwright install chromium. "
+            "portal-mcp never starts the browser without the sandbox."
         ) from exc
 
 

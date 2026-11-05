@@ -89,3 +89,22 @@ async def test_local_provider_times_out_and_cleans_up(paths: Paths, mock_base_ur
     with pytest.raises(LoginError, match="timed out"):
         await provider.login(manifest, "default")
     assert (paths.profiles / "mockportal" / "default").is_dir()
+
+
+@pytest.mark.skipif(not _browser_available(), reason="no Google Chrome or Playwright Chromium installed")
+async def test_real_browser_command_line_has_no_no_sandbox_flag(tmp_path):
+    """Reads the command line the browser really got, from chrome://version."""
+    from playwright.async_api import async_playwright
+
+    from portal_mcp.login.local import _launch
+
+    async with async_playwright() as playwright:
+        context = await _launch(playwright, tmp_path / "profile", True)
+        try:
+            page = context.pages[0] if context.pages else await context.new_page()
+            await page.goto("chrome://version")
+            command_line = await page.inner_text("#command_line")
+        finally:
+            await context.close()
+    assert command_line.strip()
+    assert "--no-sandbox" not in command_line
