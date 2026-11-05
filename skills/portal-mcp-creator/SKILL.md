@@ -26,8 +26,10 @@ uv run --project "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/skills/po
 
 ## Pipeline
 
-### 1. Scope
-Ask which service (its web address) and which parts of it the user needs. Get a short list of functions in the user's own words, for example "list my invoices, download the PDF and report a fault".
+### 1. Start at once
+Take the process forward yourself; the user should not have to know what the service offers before they have seen it. Ask only for the web address if none was given. Do not ask which parts of the service the user needs: the recording finds out (steps 4 and 5), and the user chooses in the catalog (step 9), which is the first place they are asked what they want.
+
+Derive the service name from the host (lowercase, letters, digits and `-`; for example the main word of the domain), and go straight on with steps 2 to 4. Tell the user in one or two lines what will happen: a browser window opens, they log in there themselves, and the plugin then visits and explores the pages and shows what it found. If the user did name functions (for example "list my invoices and report a fault"), look for those first and pre-select them in the catalog.
 
 ### 2. Reconnaissance (no login)
 ```bash
@@ -45,14 +47,15 @@ Start the recording in discovery mode, in the background, because it waits for t
 
 ```bash
 uv run --project "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/skills/portal-mcp-creator/scripts/record.py" \
-  --service <name> --discover --out <recording dir>
+  --service <name> --discover --explore --out <recording dir>
 ```
 
 What happens, and what to tell the user:
 1. **Preflight.** The session check is called without cookies. If it answers 200 even when logged out, the run stops: the check cannot verify a login. Find a better check (step 10) before going on. If it redirects, the run warns and continues; only a 200 counts as logged in.
 2. **Clean profile.** Every run uses a clean, temporary browser profile that is deleted afterwards. Use `--reuse-profile` only when the user explicitly asks to keep an earlier login.
 3. **Login.** Status lines on stderr say when the browser starts and when the window is open. Tell the user to log in in the window (BankID, password or SSO). The run waits up to 10 minutes. If the browser does not start, or the login is not verified in time, the summary's `error` says why (for example what the check answered). Report it as written.
-4. **Menu links, only after "Login verified".** The run writes `<recording dir>/menu_links.json`: links on the service's start page that stay on the service's host and look like reading. Logout, delete and similar links and file downloads are left out. Show the user the list (path and link text) and ask which pages to visit. Write their choice as a JSON list of paths to `<recording dir>/visit.json` (`[]` for none). The run visits only those, and refuses any path that looks like a side effect.
+4. **Menu links, only after "Login verified".** The run writes `<recording dir>/menu_links.json`: links on the service's start page that stay on the service's host and look like reading. Logout, delete and similar links and file downloads are left out. Do not wait for the user to pick pages: write the links with `in_menu: true` first, then the others, at most 40 paths, as a JSON list to `<recording dir>/visit.json`, and tell the user in one line how many pages are being visited and explored. If the user named functions, put the pages that match them first. If the user wants to name or narrow the pages, use their list instead. The run refuses any path that looks like a side effect.
+5. **Exploring, with `--explore`.** On each visited page the run clicks the page's safe controls itself, one at a time: tabs, expandable sections, "show more" and similar buttons, and an app's own sign-in button. Many single-page apps load their data only after such a click. Controls that mean an action (log out, delete, cancel, pay, send, save, confirm, approve, order, book and their Swedish equivalents), submit buttons, unlabeled controls, downloads and links to other pages are never clicked, and the guard still blocks and captures every write a click causes. The summary's `explored` lists per page how many controls were clicked and skipped, and how many requests, JSON reads and data-host requests the clicks caused; `<recording dir>/explored.json` has the texts of the clicked controls. Use `--explore` by default; interactive mode (step 6) is only for forms the user wants to fill in.
 
 When the run ends, it prints a JSON summary:
 - `login_verified`, `session_check` (what the check answered when logged out), `profile`.
@@ -104,7 +107,7 @@ uv run --project "${CLAUDE_PLUGIN_ROOT}" python "${CLAUDE_PLUGIN_ROOT}/skills/po
 ```
 The analysis refuses a recording whose login was not verified (it would describe the logged-out state). Record again; use `--allow-unverified` only if the user wants to look at the logged-out state, and then say so in the catalog.
 
-With `--service` (or `--manifest`), the hosts come from the manifest: the service's host and every data host are analyzed, each in its own pass, and every entry is marked with its `host`. Login hosts are never analyzed as data sources. The `hosts` section says, per host, how many requests and JSON reads it had and whether it was `ok`, `empty` (with the reason) or `failed`. Tell the user about every host that came out `empty` or `failed`; an empty data host usually means the pages that use it were not visited, or that it is only used after a click. If a host failed, the HAR is kept so the analysis can run again.
+With `--service` (or `--manifest`), the hosts come from the manifest: the service's host and every data host are analyzed, each in its own pass, and every entry is marked with its `host`. Login hosts are never analyzed as data sources. The `hosts` section says, per host, how many requests and JSON reads it had and whether it was `ok`, `empty` (with the reason) or `failed`. Tell the user about every host that came out `empty` or `failed`; an empty data host usually means the pages that use it were not visited, or not explored (`--explore`). If a host failed, the HAR is kept so the analysis can run again.
 
 The catalog holds structure only: path templates, query parameter names, pagination hints, response and body field names with types, and flags. Values are hidden. The analysis deletes the HAR file when it is done, because it holds cookies and page content; add `--keep-har` only if you must analyze it again. For fixed fields (hidden inputs such as a form type), you may show their values with `--show-values-for field1,field2` after checking that they are not personal data or tokens.
 
@@ -118,7 +121,7 @@ For writes, look at:
 Show the user a short table per area: suggested name, kind (`read`, `file`, `write`, `binding`), method and path, what it returns or sends (field names only), and flags: sensitive fields, sends text to other people, binding.
 
 ### 9. The user's choice
-Ask which tools to create.
+This is where the user first says what they want. Ask which tools to create.
 - Read and file tools are pre-selected.
 - Write tools are not pre-selected. The user must pick each one.
 - Binding tools need limits. Ask, for example, "What is the highest amount this tool may ever pay?" and "Which recipients or currencies are allowed?" A binding tool without limits is rejected by the runtime.

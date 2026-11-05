@@ -234,3 +234,60 @@ async def test_no_suggestions_when_the_current_check_already_answers_401(tmp_pat
     )
     assert summary["session_check"]["verdict"] == "rejects"
     assert summary["suggested_session_checks"] is None
+
+
+async def test_explore_clicks_safe_controls_and_never_actions(tmp_path, mock_base_url, monkeypatch):
+    import record
+
+    from portal_mcp.manifest import load_manifest_file
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("PORTAL_MCP_HOME", str(home))
+    monkeypatch.setenv("PORTAL_MCP_HEADLESS", "1")
+    manifest_path = write_manifest(home / "services", "mockportal", mock_manifest_yaml(mock_base_url))
+    await _seed_login(home / "profiles" / "mockportal" / "default", mock_base_url)
+    out = tmp_path / "rec"
+
+    summary = await record.record(
+        load_manifest_file(manifest_path), ["/cases"], out, timeout=30, profile="default",
+        reuse_profile=True, explore=True, click_wait=2,
+    )
+    assert summary["login_verified"] is True
+    page = summary["explored"]["pages"][0]
+    controls = {c["text"]: c for c in json.loads((out / "explored.json").read_text())[0]["controls"]}
+    # The tab loads JSON only when clicked; the hidden "Show more" is found after "More" opens it.
+    assert controls["Open cases"]["json_reads"] >= 1
+    assert "Show more" in controls and controls["Show more"]["json_reads"] >= 1
+    # Actions, a form's submit button and an unlabeled button are never clicked.
+    assert not {"Delete all", "Log out", "Next", ""} & set(controls)
+    assert page["skipped"]["looks like an action"] >= 2
+    assert page["skipped"]["submits a form"] == 1
+    # A write caused by a click is captured, not sent.
+    assert controls["Mark as read"]["captured_writes"] == 1
+    assert any(c["path"] == "/api/messages" for c in json.loads((out / "captured_writes.json").read_text()))
+    # A click that leaves the page: the recorder came back and went on.
+    assert controls["Go to invoices"]["left_page"] is True
+
+    # Nothing reached the service: the invoice the delete button points at still exists.
+    async with httpx.AsyncClient(base_url=mock_base_url) as client:
+        await client.post("/login", data={"username": USERNAME, "password": PASSWORD})
+        invoices = (await client.get("/api/invoices", params={"page_size": 50})).json()["items"]
+    assert any(i["id"] == "inv-002" for i in invoices)
+
+
+async def test_without_explore_nothing_is_clicked(tmp_path, mock_base_url, monkeypatch):
+    import record
+
+    from portal_mcp.manifest import load_manifest_file
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("PORTAL_MCP_HOME", str(home))
+    monkeypatch.setenv("PORTAL_MCP_HEADLESS", "1")
+    manifest_path = write_manifest(home / "services", "mockportal", mock_manifest_yaml(mock_base_url))
+    await _seed_login(home / "profiles" / "mockportal" / "default", mock_base_url)
+    out = tmp_path / "rec"
+    summary = await record.record(load_manifest_file(manifest_path), ["/cases"], out, timeout=30,
+                                  profile="default", reuse_profile=True)
+    assert summary["explored"] is None
+    assert not (out / "explored.json").exists()
+    assert summary["captured_writes"] == 0

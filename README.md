@@ -42,7 +42,7 @@ Remove it again with `claude plugin uninstall portal-mcp@portal-mcp` and `claude
 
 | Command | What it does |
 |---|---|
-| `/portal-mcp:add <url>` | Add a service: discovery, recording (you log in), catalog, your choice of tools, manifest. |
+| `/portal-mcp:add <url>` | Add a service. It starts at once: you log in, the plugin visits and explores the pages itself, then shows a catalog where you choose the tools. |
 | `/portal-mcp:update <service>` | Explore more parts of a service, or redo discovery for tools that stopped working. |
 | `/portal-mcp:list` | Services, profiles, tools and session status. |
 | `/portal-mcp:test <service> [profile]` | Run `self_test` and suggest an update if answers changed. |
@@ -62,6 +62,8 @@ flowchart LR
 ```
 
 The skill creates manifests. The runtime turns them into tools. The browser is only used for logging in and recording, and you control the login.
+
+While recording, the plugin explores each page itself: it clicks tabs, expandable sections and "show more" buttons, because many single-page apps load their data only after such a click. It never clicks controls that mean an action (log out, delete, pay, send, save, confirm and similar), submit buttons, unlabeled controls or downloads, and every write a click causes is blocked and captured, never sent.
 
 ## Login and a tool call
 

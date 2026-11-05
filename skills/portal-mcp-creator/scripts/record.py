@@ -11,12 +11,15 @@ Order of a run:
    menu_links.json, and the run waits for visit.json (the user's choice) before visiting.
 5. The chosen pages are visited. After login, the guard blocks non-GET requests (captured,
    not sent), GET requests that look like side effects, login hosts, and every other host.
+6. With --explore: on each visited page the recorder clicks safe controls itself (tabs,
+   expandable sections, "show more"), so data that loads only after a click is recorded.
+   Controls that mean an action are never clicked; the guard still blocks every write.
 
 The HAR file and captured_writes.json contain cookies, response bodies and form values.
 analyze.py deletes the HAR when it is done; delete the recording directory afterwards.
 
 Usage:
-  uv run --project "${CLAUDE_PLUGIN_ROOT}" python record.py --service example --discover --out <dir>
+  uv run --project "${CLAUDE_PLUGIN_ROOT}" python record.py --service example --discover --explore --out <dir>
   uv run --project "${CLAUDE_PLUGIN_ROOT}" python record.py --service example \\
       --visit /invoices --visit /reports --out <recording dir>
   # forms by hand (writes captured, not sent), until the user closes the window:
@@ -42,6 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from guard import DISCOVERY_PATHS, decide, oidc_endpoints_from, should_capture  # noqa: E402
 from check_suggest import candidate_from, rank  # noqa: E402
+from explore import COLLECT_CONTROLS_JS, MAX_CLICKS_PER_PAGE, control_key, pick_controls  # noqa: E402
 from links import COLLECT_JS, filter_menu_links, valid_visit  # noqa: E402
 
 from portal_mcp.config import default_paths  # noqa: E402
@@ -123,6 +127,8 @@ async def record(
     poll_seconds: float = 2.0,
     check_candidates: list[str] | tuple[str, ...] = (),
     suggest_check: bool = False,
+    explore: bool = False,
+    click_wait: float = 5.0,
 ) -> dict:
     from playwright.async_api import async_playwright
 
@@ -141,6 +147,9 @@ async def record(
     oidc_endpoints: dict[str, dict[str, set[str]]] = {}
     oidc_after_login: dict[str, int] = {}
     headless = os.environ.get("PORTAL_MCP_HEADLESS") == "1"
+    # Traffic counters, read before and after each exploring click.
+    traffic = {"requests": 0, "json_reads": 0, "data_host": 0, "captured": 0}
+    explored: list[dict] = []
 
     profile_dir, temporary_profile = profile_for_run(paths, manifest, profile, out_dir, reuse_profile)
     profile_dir.mkdir(parents=True, exist_ok=True)
@@ -166,6 +175,7 @@ async def record(
         "login_verified": False,
         "menu_links": None,
         "visited": [],
+        "explored": None,
         "blocked_tracking": blocked_tracking,
         "blocked_other": blocked_other,
         "blocked_navigation_hosts": undeclared_hosts,
@@ -220,6 +230,9 @@ async def record(
                     parts = urlsplit(request.url)
                     host = (parts.hostname or "").lower()
                     if decision.allowed:
+                        traffic["requests"] += 1
+                        if host in data_hosts:
+                            traffic["data_host"] += 1
                         if host in data_hosts and state["logged_in"]:
                             observe_auth(data_host_auth.setdefault(host, {}), await request.all_headers())
                         if host in asset_hosts:
@@ -250,6 +263,7 @@ async def record(
                         undeclared_hosts[host] = undeclared_hosts.get(host, 0) + 1
                     if should_capture(request.method, request.url, service_host, state["logged_in"], data_hosts):
                         body = request.post_data or ""
+                        traffic["captured"] += 1
                         captured.append({
                             "host": host,
                             "method": request.method.upper(),
@@ -262,6 +276,9 @@ async def record(
                     await route.abort("blockedbyclient")
 
                 async def inspect_response(response):
+                    if (response.request.method.upper() == "GET" and response.status == 200
+                            and "json" in (response.headers.get("content-type") or "")):
+                        traffic["json_reads"] += 1
                     if suggest and state["logged_in"]:
                         found = candidate_from(
                             response.request.method, response.url, response.status,
@@ -290,6 +307,9 @@ async def record(
                         status(state["header_too_large"]["message"])
 
                 await context.route("**/*", route_handler)
+                if explore:
+                    # A click must never leave a dialog or a second window behind.
+                    context.on("page", lambda p: asyncio.ensure_future(_close_extra(context, p)))
                 context.on("response", lambda r: response_tasks.append(asyncio.ensure_future(inspect_response(r))))
 
                 page = await _first_page(context)
@@ -369,6 +389,20 @@ async def record(
                         summary["visited"].append({"path": path, "status": "ok"})
                     except Exception as exc:  # keep going with the other pages
                         summary["visited"].append({"path": path, "status": f"error: {type(exc).__name__}"})
+                        continue
+                    if explore:
+                        explored.append(await explore_page(page, url, path, traffic, click_wait))
+
+                if explore:
+                    _write_private(out_dir / "explored.json", explored)
+                    summary["explored"] = {
+                        "pages": [{k: v for k, v in e.items() if k != "controls"} for e in explored],
+                        "file": str(out_dir / "explored.json"),
+                    }
+                    status("Explored {} pages: {} clicks, {} JSON reads and {} data-host requests after clicks."
+                           .format(len(explored), sum(e["clicked"] for e in explored),
+                                   sum(e["json_reads"] for e in explored),
+                                   sum(e["data_host_requests"] for e in explored)))
 
                 # 6. Suggested session checks: JSON endpoints the pages loaded, tested both ways.
                 if suggest:
@@ -434,6 +468,84 @@ async def record(
     return summary
 
 
+async def _close_extra(context, new_page) -> None:
+    if context.pages and new_page is not context.pages[0]:
+        try:
+            await new_page.close()
+        except Exception:
+            pass
+
+
+async def _settle(page, seconds: float) -> None:
+    try:
+        await page.wait_for_load_state("networkidle", timeout=seconds * 1000)
+    except Exception:
+        pass
+    await asyncio.sleep(0.3)
+
+
+async def explore_page(page, url: str, path: str, traffic: dict, click_wait: float) -> dict:
+    """Click the page's safe controls one at a time and note what each click caused."""
+    def dismiss(dialog):
+        asyncio.ensure_future(dialog.dismiss())
+
+    page.on("dialog", dismiss)
+    before_page = dict(traffic)
+    clicked: set[str] = set()
+    skipped: dict[str, str] = {}
+    controls: list[dict] = []
+    try:
+        while len(clicked) < MAX_CLICKS_PER_PAGE:
+            if urlsplit(page.url).path != urlsplit(url).path:
+                # The last click moved away: back to the visited page before the next one.
+                await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                await _settle(page, click_wait)
+            try:
+                raw = await page.evaluate(COLLECT_CONTROLS_JS)
+            except Exception:
+                break
+            safe, newly_skipped = pick_controls(raw, clicked)
+            skipped.update({k: v for k, v in newly_skipped.items() if k not in clicked})
+            if not safe:
+                break
+            target = safe[0]
+            key = control_key(target)
+            clicked.add(key)
+            skipped.pop(key, None)
+            start = dict(traffic)
+            outcome = "ok"
+            try:
+                await page.locator(f'[data-pmcp-explore="{target["id"]}"]').first.click(timeout=3000)
+                await _settle(page, click_wait)
+            except Exception as exc:
+                outcome = f"error: {type(exc).__name__}"
+            controls.append({
+                "text": target.get("text", ""),
+                "kind": target.get("role") or target.get("tag"),
+                "outcome": outcome,
+                "requests": traffic["requests"] - start["requests"],
+                "json_reads": traffic["json_reads"] - start["json_reads"],
+                "data_host_requests": traffic["data_host"] - start["data_host"],
+                "captured_writes": traffic["captured"] - start["captured"],
+                "left_page": urlsplit(page.url).path != urlsplit(url).path,
+            })
+    finally:
+        page.remove_listener("dialog", dismiss)
+    reasons: dict[str, int] = {}
+    for reason in skipped.values():
+        reasons[reason] = reasons.get(reason, 0) + 1
+    return {
+        "path": path,
+        "clicked": len(controls),
+        "skipped": reasons,
+        "requests": traffic["requests"] - before_page["requests"],
+        "json_reads": traffic["json_reads"] - before_page["json_reads"],
+        "data_host_requests": traffic["data_host"] - before_page["data_host"],
+        "captured_writes": traffic["captured"] - before_page["captured"],
+        "controls": controls,
+    }
+
+
 def _answer(result) -> dict | None:
     if result is None:
         return None
@@ -475,6 +587,8 @@ def main(argv: list[str] | None = None) -> None:
                         help="an endpoint to try as session.check, logged out and logged in (repeatable)")
     parser.add_argument("--reuse-profile", action="store_true",
                         help="use the persistent browser profile instead of a clean one (only if the user chose it)")
+    parser.add_argument("--explore", action="store_true",
+                        help="on each visited page, click safe controls (tabs, sections, show more) itself")
     parser.add_argument("--interactive", action="store_true", help="keep the window open until the user closes it")
     parser.add_argument("--interactive-timeout", type=float, default=1800)
     parser.add_argument(
@@ -497,6 +611,7 @@ def main(argv: list[str] | None = None) -> None:
         choice_timeout=args.choice_timeout,
         check_candidates=args.check_candidate,
         suggest_check=args.suggest_check,
+        explore=args.explore,
     ))
     json.dump(summary, sys.stdout, indent=2, ensure_ascii=False)
     sys.stdout.write("\n")

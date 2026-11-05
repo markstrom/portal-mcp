@@ -17,6 +17,7 @@ Endpoints:
   GET  /api/invoices/{id}/delete  side-effecting GET link, must be blocked by discovery
   GET  /reports/new            page that posts a JSON report on load (write capture test)
   GET  /payments/new           HTML form that submits a payment on load (write capture test)
+  GET  /cases                  page whose data loads only after a click on a tab (explore test)
 """
 
 from __future__ import annotations
@@ -182,6 +183,31 @@ def create_app() -> Starlette:
             "<script>document.getElementById('f').submit();</script>"
         )
 
+    async def cases_page(request: Request) -> Response:
+        # Like a single-page app: nothing loads until a tab is opened. The other controls are
+        # ones the recorder must never click, or that cause a write that must be captured.
+        return HTMLResponse(
+            "<!doctype html><title>Cases</title>"
+            '<div role="tablist"><button type="button" role="tab" id="open">Open cases</button></div>'
+            '<details><summary>More</summary><button type="button" id="more">Show more</button></details>'
+            '<button type="button" id="del">Delete all</button>'
+            '<button type="button" id="out">Log out</button>'
+            '<button type="button" id="mark">Mark as read</button>'
+            '<button type="button" id="away">Go to invoices</button>'
+            '<form action="/api/payments" method="post"><input name="amount" value="1"><button>Next</button></form>'
+            '<button type="button" aria-label=""></button>'
+            "<script>"
+            "window.hits = [];"
+            "const hit = (n) => { window.hits.push(n); document.title = window.hits.join(','); };"
+            "document.getElementById('open').onclick = () => { hit('open'); fetch('/api/invoices?page=2'); };"
+            "document.getElementById('more').onclick = () => { hit('more'); fetch('/api/payments'); };"
+            "document.getElementById('del').onclick = () => { hit('del'); fetch('/api/invoices/inv-002/delete'); };"
+            "document.getElementById('out').onclick = () => { hit('out'); };"
+            "document.getElementById('mark').onclick = () => { hit('mark'); fetch('/api/messages', {method: 'POST', body: '{}'}); };"
+            "document.getElementById('away').onclick = () => { location.href = '/invoices-page'; };"
+            "</script>"
+        )
+
     async def delete_invoice(request: Request) -> Response:
         if not _sid_valid(request):
             return JSONResponse({"error": "not logged in"}, status_code=401)
@@ -196,6 +222,7 @@ def create_app() -> Starlette:
             Route("/login", login_form, methods=["GET"]),
             Route("/reports/new", report_form, methods=["GET"]),
             Route("/payments/new", payment_form, methods=["GET"]),
+            Route("/cases", cases_page, methods=["GET"]),
             Route("/login", login_submit, methods=["POST"]),
             Route("/api/session", session_check, methods=["GET"]),
             Route("/account", page_check, methods=["GET"]),
