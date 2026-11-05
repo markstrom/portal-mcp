@@ -19,7 +19,7 @@ from .diagnostics import header_too_large_message, is_header_too_large
 from .login.base import LoginError, LoginManager
 from .manifest import Manifest, ToolConfig
 from .session_store import SessionStore, StoredSession
-from .transform import pick, redact
+from .transform import has_content, pick, redact, unmatched_paths
 
 log = logging.getLogger("portal_mcp.service")
 
@@ -388,7 +388,15 @@ class ServiceClient:
         else:
             data = response.json()
         if tool.pick:
+            raw = data
             data = pick(data, tool.pick)
+            if isinstance(raw, list) and raw and not any(has_content(item) for item in data):
+                # Items came back, but none has a picked field: the pick paths do not match this answer.
+                missing = unmatched_paths(raw, tool.pick)
+                raise ServiceError(
+                    f"{tool.name} got {len(raw)} items, but none had the fields in pick "
+                    f"(not found: {', '.join(missing) or 'all'}). The answer is empty or has another shape."
+                )
         if self.manifest.redact:
             data = redact(data, self.manifest.redact)
         return data

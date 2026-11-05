@@ -1,7 +1,7 @@
 # portal-mcp
 
 [![Tests](https://github.com/markstrom/portal-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/markstrom/portal-mcp/actions/workflows/tests.yml)
-[![Version](https://img.shields.io/badge/version-0.9.6-blue)](https://github.com/markstrom/portal-mcp/releases)
+[![Version](https://img.shields.io/badge/version-0.9.7-blue)](https://github.com/markstrom/portal-mcp/releases)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](pyproject.toml)
 [![MCP](https://img.shields.io/badge/MCP-server-8A2BE2)](https://modelcontextprotocol.io)
 [![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
@@ -16,7 +16,7 @@
 - Write actions run in two steps and only after you approve them yourself, in a dialog or a local confirmation page. The model cannot approve its own actions.
 - Every write action is logged in a local audit log.
 
-**Status: version 0.9.6.** Runtime with read, file, write and binding tools and human approval; logins through other hosts, BankID and OpenID Connect apps; data hosts called with the app's own token; HTML pages as read tools; file uploads; public sites without login; encrypted sessions and several profiles per service; a recorder that explores pages by itself and captures writes without sending them; `self_test`, desktop notifications, the `portal-mcp-creator` skill and the slash commands. Tested against a local mock service.
+**Status: version 0.9.7.** Runtime with read, file, write and binding tools and human approval; logins through other hosts, BankID and OpenID Connect apps; data hosts called with the app's own token; HTML pages as read tools; file uploads; public sites without login; encrypted sessions and several profiles per service; a recorder that explores pages by itself and captures writes without sending them; `self_test`, desktop notifications, the `portal-mcp-creator` skill and the slash commands. Tested against a local mock service.
 
 ## Requirements
 
