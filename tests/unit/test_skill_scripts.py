@@ -104,3 +104,41 @@ def test_endpoint_extraction_from_javascript():
     assert ("?", "/rest/v2/balances") in found
     assert ("PUT", "/api/save") in found
     assert not any("logo.png" in path for _, path in found)
+
+
+# ----- writes ---------------------------------------------------------------
+
+def test_guard_allows_real_writes_only_when_enabled():
+    url = f"https://{HOST}/api/payments"
+    assert not guard.decide("POST", url, HOST, True).allowed
+    assert guard.decide("POST", url, HOST, True, allow_writes=True).allowed
+    # still own host only, and side-effect GETs stay blocked
+    assert not guard.decide("POST", "https://other.example.org/x", HOST, True, allow_writes=True).allowed
+    assert not guard.decide("GET", f"https://{HOST}/api/logout", HOST, True, allow_writes=True).allowed
+
+
+def test_write_analysis_flags_kinds_tokens_and_hides_values():
+    captured = [
+        {"method": "POST", "path": "/api/accounts/42/payments", "content_type": "application/x-www-form-urlencoded",
+         "body": "amount=100&recipient=SecretName&_token=abc&currency=SEK"},
+        {"method": "POST", "path": "/api/accounts/43/payments", "content_type": "application/x-www-form-urlencoded",
+         "body": "amount=250,50&recipient=Other&_token=def&currency=SEK"},
+        {"method": "POST", "path": "/api/messages", "content_type": "application/json",
+         "body": json.dumps({"to": "someone", "text": "Private words"})},
+    ]
+    writes = {w["path"]: w for w in analyze.analyze_writes(captured, HOST, show_values_for={"currency"})}
+
+    pay = writes["/api/accounts/{account_id}/payments"]
+    assert pay["captures"] == 2
+    assert pay["suggested_kind"] == "binding"
+    assert pay["encoding"] == "form"
+    assert pay["token_fields"] == ["_token"]
+    assert pay["values"] == {"currency": "SEK"}  # only the field the user allowed
+    assert set(pay["present_in_every_capture"]) == {"amount", "recipient", "_token", "currency"}
+
+    msg = writes["/api/messages"]
+    assert msg["encoding"] == "json"
+    assert "text" in msg["messaging_hints"] and "message" in msg["messaging_hints"]
+
+    dumped = json.dumps(writes)
+    assert "SecretName" not in dumped and "Private words" not in dumped

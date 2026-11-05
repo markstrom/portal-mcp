@@ -16,7 +16,7 @@ from mcp.server.stdio import stdio_server
 from mcp.server.streamable_http import StreamableHTTPServerTransport
 
 from . import __version__
-from .registry import Registry
+from .registry import CallContext, Registry
 
 log = logging.getLogger("portal_mcp.server")
 
@@ -35,7 +35,12 @@ def build_server(registry: Registry) -> tuple[Server, dict[str, Any]]:
 
     @server.call_tool(validate_input=False)
     async def _call_tool(name: str, arguments: dict[str, Any] | None) -> list[types.TextContent]:
-        return await registry.call(name, arguments or {})
+        try:
+            request = server.request_context
+            ctx = CallContext(session=request.session, request_id=request.request_id)
+        except LookupError:
+            ctx = CallContext()
+        return await registry.call(name, arguments or {}, ctx)
 
     return server, state
 

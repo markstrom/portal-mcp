@@ -1,21 +1,22 @@
 ---
 name: portal-mcp-creator
-description: Create read-only MCP tools for a logged-in web service that has no open API. Use when the user wants to add a service or new read functions (listing, viewing, downloading) from a website or customer portal, or update the tools of an existing service. Covers discovery, guided recording, analysis, catalog, the user's choice, manifest generation and verification. Write tools are not part of this version.
+description: Create MCP tools for a logged-in web service that has no open API. Use when the user wants to add a service, add functions (listing, viewing, downloading, submitting forms, payments, bids) from a website or customer portal, or repair the tools of an existing service. Covers discovery, guided recording, capture of writes without performing them, analysis, catalog, the user's choice, manifest generation and verification.
 ---
 
 # portal-mcp-creator
 
-Creates a YAML manifest in `services/<name>.yaml` under the portal-mcp data directory. The runtime then exposes the chosen read and file tools as MCP tools.
+Creates or extends a YAML manifest in `services/<name>.yaml` under the portal-mcp data directory. The runtime then exposes the chosen tools as MCP tools. Read and file tools become `<service>_<tool>`. Write and binding tools become two tools, `<service>_prepare_<tool>` and `<service>_confirm_<tool>`, and the confirm step only runs after the user approves it.
 
 ## Rules (never break these)
 
 1. **The user logs in, never you.** You never ask for, type, or store a password, token or one-time code. Login happens in the visible browser window that `record.py` opens.
-2. **Read-only.** Only GET requests are recorded after login. Do not work around the guard: do not write your own requests to the service, and do not use a browser other than the one provided by the scripts.
+2. **Writes are captured, not performed.** After login the guard blocks every non-GET request and records its format instead. Do not work around the guard: do not send your own requests to the service, and do not use a browser other than the one the scripts open. Real writes during recording need the user's explicit yes (step 6).
 3. **Stay on the service's own host.** The guard blocks other hosts. Do not follow links to third-party sites.
-4. **Keep data out of the repo and out of chat.** Recordings contain cookies and response bodies. Store them only under the recordings directory, never in the plugin repo, and delete them in step 12. Quote no personal data from responses in your replies.
+4. **Keep data out of the repo and out of chat.** Recordings contain cookies, response bodies and form values. Store them only under the recordings directory, never in the plugin repo, and delete them in step 12. Quote no personal data from responses or forms in your replies.
 5. **Write descriptions yourself.** Tool descriptions are written from the analysis. Never copy text from the service's code or pages.
 6. **Confirm before you write files.** Show the manifest and wait for the user's approval before saving it.
-7. **Only the user chooses tools.** Read tools are pre-selected. Anything else needs an explicit choice.
+7. **Only the user chooses tools.** Read tools are pre-selected. Write tools are not. Binding tools (payments, bids, orders, signatures) need limits from the user. Tools that send free text to other people are off unless the user turns them on.
+8. **Never approve an action yourself.** When a `confirm_` tool asks for approval, the user answers in a dialog or browser page. Do not click it, do not tell the user that it is safe without showing them the summary, and do not retry a declined action.
 
 Paths below use `$CLAUDE_PLUGIN_ROOT` (the plugin folder). Run scripts with:
 
@@ -26,46 +27,76 @@ uv run --project "$CLAUDE_PLUGIN_ROOT" python "$CLAUDE_PLUGIN_ROOT/skills/portal
 ## Pipeline
 
 ### 1. Scope
-Ask which service (its web address) and which parts of it the user needs. Get a short list of functions in the user's own words, for example "list my invoices and download the PDF".
+Ask which service (its web address) and which parts of it the user needs. Get a short list of functions in the user's own words, for example "list my invoices, download the PDF and report a fault".
 
 ### 2. Reconnaissance (no login)
 ```bash
 uv run --project "$CLAUDE_PLUGIN_ROOT" python "$CLAUDE_PLUGIN_ROOT/skills/portal-mcp-creator/scripts/recon.py" https://<host> > recon.json
 ```
-This looks for public API docs (OpenAPI/Swagger) and extracts endpoint candidates from the web app's JavaScript. Read the output. If there is an OpenAPI document, use it to name and type the endpoints later.
+This looks for public API docs (OpenAPI/Swagger) and extracts endpoint candidates from the web app's JavaScript. If there is an OpenAPI document, use it to name and type the endpoints later.
 
 ### 3. Static analysis
-Use the `endpoints` in `recon.json` as hints for paths and parameters. Note endpoints that look like writes; they are out of scope for this version.
+Use the `endpoints` in `recon.json` as hints for paths, methods and fields. Endpoints found with POST, PUT, PATCH or DELETE are write candidates for step 6.
 
 ### 4. Login and recording
-Write the manifest draft first (step 10 format, minimal: name, base_url, login_url, session, empty tools). Save it to `services/<name>.yaml` in the data directory (`portal-mcp` user data dir, or `PORTAL_MCP_HOME`). Then:
+Write a minimal manifest draft first (name, base_url, login_url, session, empty tools) and save it as `services/<name>.yaml` in the data directory (`portal-mcp` user data dir, or `PORTAL_MCP_HOME`). Then:
 
 ```bash
 uv run --project "$CLAUDE_PLUGIN_ROOT" python "$CLAUDE_PLUGIN_ROOT/skills/portal-mcp-creator/scripts/record.py" \
   --service <name> --visit /path/to/page --visit /another/page --out <recording dir>
 ```
 
-Tell the user a browser window is opening and that they should log in there (BankID, password or SSO, whatever the service uses). The script waits up to 10 minutes. After login it visits the paths you give. Ask the user which pages to visit if you do not know them.
+Tell the user a browser window is opening and that they should log in there (BankID, password or SSO, whatever the service uses). The script waits up to 10 minutes, then visits the paths you give. Ask the user which pages to visit if you do not know them.
 
-The script prints a summary: which pages were visited and which requests were blocked, with reasons. Show the user the blocked list. If a read function needs a request that was blocked, say so and ask the user whether to visit it another way. Do not lift the guard.
+The script prints a summary: visited pages, blocked requests with reasons, and the number of captured writes. Show the user the blocked list. If a read function needs a request that was blocked, say so and ask how to proceed. Do not lift the guard.
 
 ### 5. Exploration
-Repeat step 4 with more `--visit` paths when the user wants more functions. Pagination: visit a second page of a list if it exists, so the analysis sees `page` or `offset` parameters.
+Repeat step 4 with more `--visit` paths when the user wants more read functions. Pagination: visit a second page of a list if there is one, so the analysis sees `page` or `offset` parameters.
 
-### 6. Analysis
+### 6. Writes without performing them
+For each write function the user wants, have the user fill in and submit the form while writes are captured:
+
 ```bash
-uv run --project "$CLAUDE_PLUGIN_ROOT" python "$CLAUDE_PLUGIN_ROOT/skills/portal-mcp-creator/scripts/analyze.py" <recording dir>/recording.har --host <host> > catalog.json
+uv run --project "$CLAUDE_PLUGIN_ROOT" python "$CLAUDE_PLUGIN_ROOT/skills/portal-mcp-creator/scripts/record.py" \
+  --service <name> --visit /path/to/form/page --interactive --out <recording dir>
 ```
-The catalog holds structure only: path templates, query parameter names, pagination hints, response field names and types, and sensitive field names. It contains no values. Check its `tools` list against what the user asked for. Check `skipped` too.
 
-### 7. Catalog
-Show the user a short table: suggested name, kind (`read` or `file`), path, what it returns (field names only), and flags for sensitive fields. Mention any function that was found but is out of scope (writes).
+Tell the user: "Fill in the form as you normally would and press submit. Nothing is sent: the request is stopped in the browser and only its format is saved. Use made-up values where you can. Close the window when you are done." The submitted requests are saved in `<recording dir>/captured_writes.json`. The page may show an error after submit; that is expected.
 
-### 8. The user's choice
-Ask which tools to create. Read tools are pre-selected. Ask for a rate limit (default 30 per minute) if the user cares about it. Ask whether any read result should be cached (`cache_seconds`). Ask whether any field must be removed from responses (`redact`), and suggest the sensitive fields from the catalog.
+Some flows need a real answer from an earlier step (for example a confirmation number that the next form uses). Then ask the user plainly whether they want to perform one real action during recording, and what it will do. Only on a clear yes:
 
-### 9. Generation
-Write the manifest. Descriptions are yours, written from the analysis, in the user's language. Use this shape:
+```bash
+... record.py --service <name> --interactive --allow-real-writes --out <recording dir>
+```
+
+Real writes still go to the service's own host only, and side-effect GET links stay blocked.
+
+### 7. Analysis
+```bash
+uv run --project "$CLAUDE_PLUGIN_ROOT" python "$CLAUDE_PLUGIN_ROOT/skills/portal-mcp-creator/scripts/analyze.py" \
+  <recording dir>/recording.har --host <host> --writes <recording dir>/captured_writes.json > catalog.json
+```
+The catalog holds structure only: path templates, query parameter names, pagination hints, response and body field names with types, and flags. Values are hidden. For fixed fields (hidden inputs such as a form type), you may show their values with `--show-values-for field1,field2` after checking that they are not personal data or tokens.
+
+For writes, look at:
+- `encoding`: `json` or `form` (sets `body_encoding`). `multipart` is not supported in this version.
+- `token_fields`: CSRF or similar tokens in the body. These must not become fixed values. If a service needs a token in the body rather than a header, tell the user this version cannot handle it.
+- `present_in_every_capture`: candidates for `required`.
+- `binding_hints` and `messaging_hints`: candidates for `binding` and `messaging`.
+
+### 8. Catalog
+Show the user a short table per area: suggested name, kind (`read`, `file`, `write`, `binding`), method and path, what it returns or sends (field names only), and flags: sensitive fields, sends text to other people, binding.
+
+### 9. The user's choice
+Ask which tools to create.
+- Read and file tools are pre-selected.
+- Write tools are not pre-selected. The user must pick each one.
+- Binding tools need limits. Ask, for example, "What is the highest amount this tool may ever pay?" and "Which recipients or currencies are allowed?" A binding tool without limits is rejected by the runtime.
+- Tools that send free text to other people (`messaging`) are off by default. Explain that, and set `enabled: true` only if the user asks for it.
+- Also ask about rate limit (default 30 per minute), caching of reads (`cache_seconds`) and fields to remove from responses (`redact`), and suggest the sensitive fields from the catalog.
+
+### 10. Generation
+Write the manifest. Descriptions are yours, written from the analysis, in the user's language. Shape:
 
 ```yaml
 name: <service>
@@ -102,37 +133,77 @@ tools:
       properties:
         invoice_id: {type: string}
       required: [invoice_id]
+  - name: report_fault
+    kind: write
+    description: <written by you>
+    method: POST
+    path: /api/faults
+    body_encoding: json          # or form
+    body_schema:
+      type: object
+      properties:
+        title: {type: string}
+        text: {type: string}
+      required: [title]
+    body_constants: {category: general}   # fixed fields, never tokens
+    limits:
+      max_length: {title: 100, text: 2000}
+    summary: "Report a fault: {title}"
+  - name: pay_invoice
+    kind: binding
+    description: <written by you>
+    method: POST
+    path: /api/invoices/{invoice_id}/pay
+    params:
+      type: object
+      properties:
+        invoice_id: {type: string}
+      required: [invoice_id]
+    body_schema:
+      type: object
+      properties:
+        amount: {type: number}
+      required: [amount]
+    limits:
+      max: {amount: 5000}        # from the user
+    summary: "Pay {amount} for invoice {invoice_id}"
 ```
 
 Rules for the manifest:
 - `path` uses `{name}` for path parameters. Each one must be in `params` and is required.
-- `params` is a JSON Schema. Parameters that are not path parameters become query parameters on GET.
-- `pick` keeps only the listed dotted fields. For a list response, prefix with the list key (`items.id`). Use it to keep the output small and to drop fields the user does not need.
-- `session.check` must be an endpoint that returns 200 when logged in and 401 when not. If you cannot find one, ask the user for a page that needs login. Do not guess.
-- Keep `name` and tool names to lowercase letters, digits and underscores.
+- Read and file tools must use GET. Write and binding tools must not use GET, and need `body_schema` unless the method is DELETE.
+- For write tools, `params` holds only path parameters; the body fields go in `body_schema`. Unknown fields are rejected at runtime.
+- `limits` supports `max`, `min` (numbers), `allowed` (list of values) and `max_length` (strings). Keys are argument names.
+- `summary` is the text the user approves. Write it so the user can see exactly what happens, with the important values as `{placeholders}`. The runtime adds the full list of values below it.
+- Form fields typed as `integer (as text)` or `number (as text)` should be `integer` or `number` in `body_schema`, so limits can be checked. The runtime sends them as text in form bodies.
+- `pick` keeps only the listed dotted fields; for a list response, prefix with the list key (`items.id`).
+- `session.check` must return 200 when logged in and 401 when not. If you cannot find one, ask the user for a page that needs login. Do not guess.
+- Names use lowercase letters, digits and underscores.
 
 Show the full manifest to the user and wait for approval. Save it only after approval.
 
-### 10. Verification
-Start the runtime tools (restart the client or use `/plugin` if the new tools do not show up; the runtime also reloads the manifest on change). Call each approved read tool once through MCP and check:
-- the answer is JSON with the fields in the catalog,
-- redacted fields are gone,
-- for file tools, a file was saved and it starts with the expected bytes.
+### 11. Verification
+The runtime reloads the manifest when it changes; some clients still need a restart before new tools show up.
 
-Report results to the user. If a tool fails, read the error, fix the manifest, and retry. Do not ask the user to share the response body; describe the field names instead.
+Read and file tools: call each one once and check that the answer has the fields from the catalog, that redacted fields are gone, and that file tools save a file with the expected start bytes.
 
-Write tools: not in this version. The first real run of any future write tool is done together with the user.
+Write and binding tools:
+1. Compare each tool with its capture: method, path template, `body_encoding`, and field names in `body_schema` plus `body_constants` must match what was captured. Report any difference.
+2. Call `prepare_<tool>` with the user's own example values and show the summary. Check that limits refuse a value outside them (for example an amount above the maximum); do this with `prepare_` only.
+3. The first real run of each write tool is done together with the user: tell them what will be sent, call `confirm_<tool>`, and let them approve or cancel in the dialog or browser page. Do not do a real run for a binding tool unless the user wants to.
 
-### 11. Cleanup
-Delete the recording directory. Then commit the manifest in the local manifest git repo (`git -C <services dir> add <name>.yaml && git -C <services dir> commit`, creating the repo with `git init` the first time). Never commit recordings or session files.
+If a tool fails, read the error, fix the manifest, and retry. Do not ask the user to share response bodies; describe the field names instead.
 
-### 12. Summary
-Tell the user which tools exist now, which were left out and why, and where the manifest is.
+### 12. Cleanup
+Delete the recording directory (HAR and `captured_writes.json`). Then commit the manifest in the local manifest git repo (`git -C <services dir> add <name>.yaml && git -C <services dir> commit`, creating the repo with `git init` the first time). Never commit recordings, session files or the audit log.
+
+### 13. Summary
+Tell the user which tools exist now, which were left out and why, which limits apply, and where the manifest and the audit log (`audit.log` in the data directory) are.
 
 ## Adding functions to an existing service
 Run this pipeline again for the new parts only. Add new tools to the same manifest. Do not change existing tool names without asking, since clients may depend on them.
 
 ## Notes
-- Recording is the only step that needs the user. Everything else runs without a login.
+- Recording is the only step that needs the user's hands, apart from approving writes.
 - If `record.py` reports that no browser is available, tell the user to install Google Chrome, or to run `uv run playwright install chromium`.
 - If the login times out, ask the user whether to try again.

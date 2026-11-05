@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 NAME_RE = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 TOOL_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -42,16 +42,50 @@ class SessionConfig(BaseModel):
         return self
 
 
+class Limits(BaseModel):
+    """Bounds on arguments of write and binding tools. Keys are dotted argument paths."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    max: dict[str, float] = Field(default_factory=dict)  # e.g. {amount: 5000}
+    min: dict[str, float] = Field(default_factory=dict)
+    allowed: dict[str, list[Any]] = Field(default_factory=dict)  # e.g. {currency: [SEK]}
+    max_length: dict[str, int] = Field(default_factory=dict)
+
+    def is_empty(self) -> bool:
+        return not (self.max or self.min or self.allowed or self.max_length)
+
+
 class ToolConfig(BaseModel):
     name: str
     kind: ToolKind
     description: str = ""
     method: HttpMethod = "GET"
     path: str
+    # Arguments. For read and file tools: path and query parameters.
+    # For write and binding tools: path parameters (body fields go in body_schema).
     params: dict[str, Any] = Field(default_factory=lambda: {"type": "object", "properties": {}})
     pick: list[str] | None = None  # keep only these dotted field paths in JSON responses
-    body_schema: dict[str, Any] | None = None
-    limits: dict[str, Any] = Field(default_factory=dict)
+    # Write and binding tools
+    body_schema: dict[str, Any] | None = None  # JSON Schema for the request body
+    body_encoding: Literal["json", "form"] = "json"
+    body_constants: dict[str, Any] = Field(default_factory=dict)  # fixed fields, e.g. hidden form inputs
+    summary: str | None = None  # confirmation text template, e.g. "Pay {amount} to {recipient}"
+    limits: Limits = Field(default_factory=Limits)
+    messaging: bool = False  # sends free text to other people: off unless enabled is true
+    enabled: bool | None = None
+
+    @property
+    def exposed(self) -> bool:
+        if self.enabled is False:
+            return False
+        if self.messaging and self.enabled is not True:
+            return False
+        return True
+
+    @property
+    def is_write(self) -> bool:
+        return self.kind in ("write", "binding")
 
     @field_validator("name")
     @classmethod
@@ -66,6 +100,21 @@ class ToolConfig(BaseModel):
         if not value.startswith("/"):
             raise ValueError("tool path must start with '/'")
         return value
+
+    @model_validator(mode="after")
+    def _kind_rules(self) -> ToolConfig:
+        if self.kind in ("read", "file") and self.method != "GET":
+            raise ValueError(f"{self.kind} tool {self.name!r} must use GET")
+        if self.is_write:
+            if self.method == "GET":
+                raise ValueError(f"write tool {self.name!r} cannot use GET")
+            if self.method != "DELETE" and self.body_schema is None:
+                raise ValueError(f"write tool {self.name!r} needs body_schema")
+        if self.kind == "binding" and self.limits.is_empty():
+            raise ValueError(f"binding tool {self.name!r} needs limits, for example a maximum amount")
+        if self.messaging and not self.is_write:
+            raise ValueError("messaging only applies to write tools")
+        return self
 
 
 class Manifest(BaseModel):

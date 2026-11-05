@@ -79,3 +79,38 @@ def test_broken_manifest_does_not_affect_others(tmp_path):
 def test_missing_services_directory_is_empty(tmp_path):
     result = load_manifests(tmp_path / "nope")
     assert result.manifests == {} and result.errors == {}
+
+
+def _tool(**overrides) -> dict:
+    tool = {"name": "do_it", "kind": "write", "method": "POST", "path": "/api/do",
+            "body_schema": {"type": "object", "properties": {"x": {"type": "string"}}}}
+    tool.update(overrides)
+    return tool
+
+
+@pytest.mark.parametrize(
+    "tool,message",
+    [
+        (_tool(method="GET"), "cannot use GET"),
+        (_tool(body_schema=None), "needs body_schema"),
+        (_tool(kind="binding"), "needs limits"),
+        (_tool(kind="read"), "must use GET"),
+        ({"name": "r", "kind": "read", "path": "/x", "messaging": True}, "messaging only applies"),
+        (_tool(kind="binding", limits={"maximum": {"x": 1}}), "Extra inputs"),
+    ],
+)
+def test_write_tool_rules(tool, message):
+    with pytest.raises(ValueError, match=message):
+        Manifest.model_validate(_valid_manifest(tools=[tool]))
+
+
+def test_delete_write_needs_no_body_schema():
+    manifest = Manifest.model_validate(_valid_manifest(tools=[_tool(method="DELETE", body_schema=None)]))
+    assert manifest.tools[0].is_write
+
+
+def test_messaging_tools_are_off_by_default():
+    off = Manifest.model_validate(_valid_manifest(tools=[_tool(messaging=True)])).tools[0]
+    on = Manifest.model_validate(_valid_manifest(tools=[_tool(messaging=True, enabled=True)])).tools[0]
+    disabled = Manifest.model_validate(_valid_manifest(tools=[_tool(enabled=False)])).tools[0]
+    assert off.exposed is False and on.exposed is True and disabled.exposed is False

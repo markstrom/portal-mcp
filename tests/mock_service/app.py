@@ -7,8 +7,13 @@ Endpoints:
   GET  /api/invoices           paginated list (?page=, ?page_size=)
   GET  /api/invoices/{id}/pdf  PDF download
   POST /api/logout             needs the CSRF header; clears the session
-  POST /api/reports            needs the CSRF header; creates a report (write example)
+  POST /api/reports            needs the CSRF header; creates a report (JSON write example)
+  POST /api/payments           needs the CSRF header; form-encoded payment (binding example)
+  GET  /api/payments           payments received so far
+  POST /api/messages           needs the CSRF header; sends a message (messaging example)
   GET  /api/invoices/{id}/delete  side-effecting GET link, must be blocked by discovery
+  GET  /reports/new            page that posts a JSON report on load (write capture test)
+  GET  /payments/new           HTML form that submits a payment on load (write capture test)
 """
 
 from __future__ import annotations
@@ -28,6 +33,7 @@ CSRF_HEADER = "x-csrf-token"
 def create_app() -> Starlette:
     sessions: dict[str, str] = {}  # sid -> csrf token
     invoices = fresh_invoices()
+    payments: list[dict] = []
 
     def _sid_valid(request: Request) -> bool:
         return request.cookies.get("sid") in sessions
@@ -99,6 +105,43 @@ def create_app() -> Starlette:
             return JSONResponse({"error": "missing or wrong CSRF token"}, status_code=403)
         return JSONResponse({"id": "report-1", "status": "created"}, status_code=201)
 
+    async def create_payment(request: Request) -> Response:
+        if not _csrf_valid(request):
+            return JSONResponse({"error": "missing or wrong CSRF token"}, status_code=403)
+        form = await request.form()
+        payment = {"id": f"pay-{len(payments) + 1}", **{k: form[k] for k in form}}
+        payments.append(payment)
+        return JSONResponse(payment, status_code=201)
+
+    async def list_payments(request: Request) -> Response:
+        if not _sid_valid(request):
+            return JSONResponse({"error": "not logged in"}, status_code=401)
+        return JSONResponse({"items": payments})
+
+    async def send_message(request: Request) -> Response:
+        if not _csrf_valid(request):
+            return JSONResponse({"error": "missing or wrong CSRF token"}, status_code=403)
+        return JSONResponse({"id": "msg-1", "status": "sent"}, status_code=201)
+
+    async def report_form(request: Request) -> Response:
+        # A page whose script submits a JSON write on load, like a single-page app would.
+        return HTMLResponse(
+            "<!doctype html><title>New report</title><p>New report</p><script>"
+            "fetch('/api/reports', {method: 'POST', headers: {'content-type': 'application/json',"
+            " 'x-csrf-token': 'from-page'}, body: JSON.stringify({title: 'Form title', text: 'Form text'})});"
+            "</script>"
+        )
+
+    async def payment_form(request: Request) -> Response:
+        # A classic HTML form, submitted automatically so tests need no clicks.
+        return HTMLResponse(
+            "<!doctype html><title>New payment</title>"
+            '<form id="f" method="post" action="/api/payments">'
+            '<input name="amount" value="125"><input name="recipient" value="Testmottagare">'
+            '<input type="hidden" name="currency" value="SEK"></form>'
+            "<script>document.getElementById('f').submit();</script>"
+        )
+
     async def delete_invoice(request: Request) -> Response:
         if not _sid_valid(request):
             return JSONResponse({"error": "not logged in"}, status_code=401)
@@ -110,6 +153,8 @@ def create_app() -> Starlette:
     return Starlette(
         routes=[
             Route("/login", login_form, methods=["GET"]),
+            Route("/reports/new", report_form, methods=["GET"]),
+            Route("/payments/new", payment_form, methods=["GET"]),
             Route("/login", login_submit, methods=["POST"]),
             Route("/api/session", session_check, methods=["GET"]),
             Route("/api/invoices", list_invoices, methods=["GET"]),
@@ -117,5 +162,8 @@ def create_app() -> Starlette:
             Route("/api/invoices/{invoice_id}/delete", delete_invoice, methods=["GET"]),
             Route("/api/logout", logout, methods=["POST"]),
             Route("/api/reports", create_report, methods=["POST"]),
+            Route("/api/payments", create_payment, methods=["POST"]),
+            Route("/api/payments", list_payments, methods=["GET"]),
+            Route("/api/messages", send_message, methods=["POST"]),
         ]
     )

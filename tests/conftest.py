@@ -109,8 +109,46 @@ tools:
       required: [invoice_id]
   - name: create_report
     kind: write
-    description: Create a report (not exposed in phase 1).
+    description: Create a report.
     method: POST
     path: /api/reports
+    body_schema:
+      type: object
+      properties:
+        title: {{type: string}}
+        text: {{type: string}}
+      required: [title]
+    limits:
+      max_length: {{title: 80}}
+    summary: "Create report: {{title}}"
+  - name: pay
+    kind: binding
+    description: Pay an amount to a recipient.
+    method: POST
+    path: /api/payments
+    body_encoding: form
+    body_schema:
+      type: object
+      properties:
+        amount: {{type: number}}
+        recipient: {{type: string}}
+      required: [amount, recipient]
+    body_constants: {{currency: SEK}}
+    limits:
+      max: {{amount: 5000}}
+      min: {{amount: 1}}
+    summary: "Pay {{amount}} SEK to {{recipient}}"
+  - name: send_message
+    kind: write
+    messaging: true
+    description: Send a message to another person.
+    method: POST
+    path: /api/messages
+    body_schema:
+      type: object
+      properties:
+        to: {{type: string}}
+        text: {{type: string}}
+      required: [to, text]
 {extra_tools}
 """

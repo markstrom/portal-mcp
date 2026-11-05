@@ -3,7 +3,8 @@
 Rules (see HANDOFF "Skillen portal-mcp-creator: pipeline", step 5):
 - Only the service's own host is allowed.
 - Before login: everything on the host is allowed, so the login can complete.
-- After login: every non-GET request is blocked.
+- After login: every non-GET request is blocked (captured, not sent), unless the user
+  explicitly agreed to a real action for this recording.
 - After login: GET requests whose path looks like a side effect are blocked.
 """
 
@@ -49,7 +50,8 @@ def side_effect_hint(path: str) -> str | None:
     return None
 
 
-def decide(method: str, url: str, service_host: str, logged_in: bool) -> Decision:
+def decide(method: str, url: str, service_host: str, logged_in: bool, allow_writes: bool = False) -> Decision:
+    """allow_writes lets non-GET requests through. Use it only after the user agreed to a real action."""
     parts = urlsplit(url)
     host = (parts.hostname or "").lower()
     if host != service_host.lower():
@@ -58,6 +60,8 @@ def decide(method: str, url: str, service_host: str, logged_in: bool) -> Decisio
         return Decision(True, "before login")
     method = method.upper()
     if method != "GET":
+        if allow_writes:
+            return Decision(True, f"{method} allowed: the user agreed to a real action")
         return Decision(False, f"{method} is blocked after login")
     hint = side_effect_hint(parts.path)
     if hint is not None:

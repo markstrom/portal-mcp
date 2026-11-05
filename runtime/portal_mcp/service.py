@@ -216,6 +216,33 @@ class ServiceClient:
             self._cache[cache_key] = (self._clock() + self.manifest.cache_seconds, result)
         return result
 
+    async def execute_write(self, tool_name: str, profile: str, arguments: dict[str, Any]) -> dict[str, Any]:
+        """Send an approved write. Only called by the confirm step after human approval."""
+        tool = self.tool(tool_name)
+        if not tool.is_write:
+            raise ServiceError(f"{tool.name} is not a write tool")
+        self._rate.acquire()
+        session = await self._ensure_session(profile)
+        response = await self._send(tool, arguments, session)
+        if response.status_code == 401:
+            # 401 means the request was not accepted, so one retry after a new login is safe.
+            log.info("%s rejected the session; logging in again before retrying the write", self.name)
+            session = await self._ensure_session(profile, force_login=True)
+            response = await self._send(tool, arguments, session)
+        self._cache.clear()  # data may have changed
+        body: Any
+        content_type = response.headers.get("content-type", "")
+        if "json" in content_type:
+            try:
+                body = response.json()
+                if self.manifest.redact:
+                    body = redact(body, self.manifest.redact)
+            except ValueError:
+                body = response.text[:4000]
+        else:
+            body = response.text[:4000]
+        return {"http_status": response.status_code, "ok": response.status_code < 400, "response": body}
+
     async def _send(self, tool: ToolConfig, arguments: dict[str, Any], session: StoredSession) -> httpx.Response:
         args = dict(arguments)
         path = tool.path
@@ -229,7 +256,13 @@ class ServiceClient:
                 if tool.method == "GET":
                     response = await client.request("GET", path, params=_query(args))
                 else:
-                    response = await client.request(tool.method, path, json=args or None)
+                    body = {**tool.body_constants, **args}
+                    if not body:
+                        response = await client.request(tool.method, path)
+                    elif tool.body_encoding == "form":
+                        response = await client.request(tool.method, path, data=_form(body))
+                    else:
+                        response = await client.request(tool.method, path, json=body)
             except httpx.HTTPError as exc:
                 raise ServiceError(f"could not reach {self.name}: {exc}") from exc
 
@@ -272,6 +305,18 @@ def _query(args: dict[str, Any]) -> list[tuple[str, str]]:
         else:
             params.append((key, _scalar(value)))
     return params
+
+
+def _form(body: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in body.items():
+        if isinstance(value, list):
+            out[key] = [_scalar(v) for v in value]
+        elif isinstance(value, dict):
+            out[key] = json.dumps(value, ensure_ascii=False)
+        elif value is not None:
+            out[key] = _scalar(value)
+    return out
 
 
 def _scalar(value: Any) -> str:
