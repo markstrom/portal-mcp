@@ -1,6 +1,6 @@
 [project]
 name = "portal-mcp"
-version = "0.4.2"
+version = "0.4.3"
 description = "Run MCP tools against logged-in web portals that lack an open API."
 readme = "README.md"
 requires-python = ">=3.11"

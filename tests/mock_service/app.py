@@ -4,6 +4,8 @@ Endpoints:
   GET  /login                  login form (test credentials in data.py)
   POST /login                  sets the session cookie `sid` and the CSRF cookie `csrf`
   GET  /api/session            200 when the session is valid, 401 otherwise
+  GET  /account                page: 200 when logged in, otherwise a redirect to /login that sets
+                               a new nonce cookie (like many OpenID Connect sign-ins)
   GET  /api/invoices           paginated list (?page=, ?page_size=)
   GET  /api/invoices/{id}/pdf  PDF download
   POST /api/logout             needs the CSRF header; clears the session
@@ -67,6 +69,14 @@ def create_app() -> Starlette:
         if not _sid_valid(request):
             return JSONResponse({"error": "not logged in"}, status_code=401)
         return JSONResponse({"user": USERNAME})
+
+    async def page_check(request: Request) -> Response:
+        # Like a sign-in system that redirects to the login and sets a new nonce cookie each time.
+        if _sid_valid(request):
+            return HTMLResponse("<p>logged in</p>")
+        response = RedirectResponse("/login", status_code=302)
+        response.set_cookie(f"nonce.{secrets.token_urlsafe(12)}", "n", max_age=900, path="/")
+        return response
 
     async def list_invoices(request: Request) -> Response:
         if not _sid_valid(request):
@@ -157,6 +167,7 @@ def create_app() -> Starlette:
             Route("/payments/new", payment_form, methods=["GET"]),
             Route("/login", login_submit, methods=["POST"]),
             Route("/api/session", session_check, methods=["GET"]),
+            Route("/account", page_check, methods=["GET"]),
             Route("/api/invoices", list_invoices, methods=["GET"]),
             Route("/api/invoices/{invoice_id}/pdf", invoice_pdf, methods=["GET"]),
             Route("/api/invoices/{invoice_id}/delete", delete_invoice, methods=["GET"]),

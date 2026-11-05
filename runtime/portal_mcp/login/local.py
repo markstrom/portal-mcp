@@ -1,8 +1,13 @@
 """`local` login provider: a visible browser window with a persistent profile per service and profile.
 
-The user logs in by hand. The provider polls the service's session-check endpoint from
-inside the browser context and captures cookies (and a bearer token, if configured)
-once the check returns 200. The password is never read by this code.
+The user logs in by hand. While they do, the provider polls the service's session check and
+captures cookies (and a bearer token, if configured) once the check returns 200. The password
+is never read by this code.
+
+The check is sent with a copy of the browser's cookies from a short-lived HTTP client of its
+own, never through the browser profile. Many sign-in systems set a new cookie (for example an
+OpenID Connect nonce) on every redirect to the login; if those landed in the profile, polling
+would build them up until the service rejects the request as too large.
 """
 
 from __future__ import annotations
@@ -13,6 +18,8 @@ import os
 import time
 from pathlib import Path
 from typing import Any
+
+import httpx
 
 from ..config import Paths
 from ..manifest import Manifest
@@ -102,16 +109,73 @@ async def _launch(playwright: Any, profile_dir: Path, headless: bool, **options:
         ) from exc
 
 
-async def _capture(context: Any, page: Any, manifest: Manifest) -> StoredSession | None:
+_redirect_warned: set[str] = set()
+
+
+async def check_status(
+    manifest: Manifest,
+    cookies: list[dict[str, Any]],
+    *,
+    bearer: str | None = None,
+    user_agent: str | None = None,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> int | None:
+    """Call the session check with the given cookies. Returns the HTTP status, or None.
+
+    The client is created for this one request and thrown away, so cookies the service sets
+    in its answer never reach the browser profile.
+    """
     check_url = manifest.base_url.rstrip("/") + manifest.session.check
+    headers = {"accept": "application/json, text/html;q=0.9, */*;q=0.5"}
+    if cookies:
+        headers["cookie"] = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
+    if bearer:
+        headers["authorization"] = f"Bearer {bearer}"
+    if user_agent:
+        headers["user-agent"] = user_agent
     try:
-        response = await context.request.get(check_url, max_redirects=0)
+        async with httpx.AsyncClient(follow_redirects=False, timeout=15, transport=transport) as client:
+            response = await client.get(check_url, headers=headers)
+    except httpx.HTTPError:
+        return None
+    return response.status_code
+
+
+async def _user_agent(page: Any) -> str | None:
+    if page is None:
+        return None
+    try:
+        value = await page.evaluate("() => navigator.userAgent")
     except Exception:
         return None
-    if response.status != 200:
+    return value if isinstance(value, str) else None
+
+
+async def _capture(
+    context: Any, page: Any, manifest: Manifest, *, transport: httpx.AsyncBaseTransport | None = None
+) -> StoredSession | None:
+    # Only cookies that the browser would send to the service's own host.
+    cookies = await context.cookies([manifest.base_url])
+
+    bearer = None
+    if manifest.session.type == "bearer":
+        bearer = await _read_storage(page, manifest.session.bearer_source or "")
+        if not bearer:
+            return None
+
+    status = await check_status(
+        manifest, cookies, bearer=bearer, user_agent=await _user_agent(page), transport=transport
+    )
+    if status is not None and 300 <= status < 400 and manifest.name not in _redirect_warned:
+        _redirect_warned.add(manifest.name)
+        log.warning(
+            "the session check for %s answers with a redirect while logged out; "
+            "an endpoint that answers 401 is a better session.check",
+            manifest.name,
+        )
+    if status != 200:
         return None
 
-    cookies = await context.cookies([manifest.base_url])
     session = StoredSession(
         cookies=[
             {"name": c["name"], "value": c["value"], "domain": c["domain"], "path": c["path"]}
@@ -126,11 +190,8 @@ async def _capture(context: Any, page: Any, manifest: Manifest) -> StoredSession
                 session.csrf = cookie["value"]
                 break
 
-    if manifest.session.type == "bearer":
-        token = await _read_storage(page, manifest.session.bearer_source or "")
-        if not token:
-            return None
-        session.bearer = token
+    if bearer:
+        session.bearer = bearer
     return session
 
 

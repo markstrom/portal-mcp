@@ -108,3 +108,28 @@ async def test_real_browser_command_line_has_no_no_sandbox_flag(tmp_path):
             await context.close()
     assert command_line.strip()
     assert "--no-sandbox" not in command_line
+
+
+@pytest.mark.skipif(not _browser_available(), reason="no Google Chrome or Playwright Chromium installed")
+async def test_polling_a_redirecting_check_adds_no_cookies_to_the_profile(tmp_path, mock_base_url):
+    """Regression: each poll of a redirecting session check used to add a nonce cookie to the profile."""
+    import yaml
+    from playwright.async_api import async_playwright
+
+    from portal_mcp.login.local import _capture, _launch
+    from portal_mcp.manifest import Manifest
+
+    manifest = Manifest.model_validate(yaml.safe_load(
+        f"name: demo\nbase_url: {mock_base_url}\nlogin_url: {mock_base_url}/login\nsession: {{check: /account}}\n"
+    ))
+    async with async_playwright() as playwright:
+        context = await _launch(playwright, tmp_path / "profile", True)
+        try:
+            page = context.pages[0] if context.pages else await context.new_page()
+            await page.goto(manifest.login_url)
+            for _ in range(10):
+                assert await _capture(context, page, manifest) is None  # not logged in yet
+            names = [c["name"] for c in await context.cookies([mock_base_url])]
+        finally:
+            await context.close()
+    assert not [n for n in names if n.startswith("nonce.")]

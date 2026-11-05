@@ -180,7 +180,7 @@ Rules for the manifest:
 - `summary` is the text the user approves. Write it so the user can see exactly what happens, with the important values as `{placeholders}`. The runtime adds the full list of values below it.
 - Form fields typed as `integer (as text)` or `number (as text)` should be `integer` or `number` in `body_schema`, so limits can be checked. The runtime sends them as text in form bodies.
 - `pick` keeps only the listed dotted fields; for a list response, prefix with the list key (`items.id`).
-- `session.check` must return 200 when logged in and 401 when not. If you cannot find one, ask the user for a page that needs login. Do not guess.
+- `session.check` must return 200 when logged in. Prefer an API endpoint from the recording that answers 401 (or 403) when logged out, for example one that returns the user's own profile. A page that redirects to the login when logged out also works, but many sign-in systems set a new cookie on each such redirect; the runtime keeps those out of the browser profile, but a 401 endpoint is cheaper and clearer. If the runtime logs that the check answers with a redirect, look for a 401 endpoint. If you cannot find any check, ask the user for a page that needs login. Do not guess.
 - Names use lowercase letters, digits and underscores.
 
 Show the full manifest to the user and wait for approval. If `login_hosts` is not empty, list those hosts separately above the manifest, with this sentence: "You trust these hosts to handle your login for <service>. They are allowed only while you log in, never get the saved session, and are blocked after login." Save the manifest only after approval.
