@@ -1,15 +1,20 @@
 {
   "name": "portal-mcp",
-  "version": "0.9.0",
-  "description": "Create MCP tools for logged-in web portals that have no open API. You log in yourself in a visible browser window; the runtime never handles passwords.",
+  "version": "0.9.1",
+  "description": "Turn websites, customer portals and public sites without an open API into MCP tools. You log in yourself in a visible browser window; the runtime never handles passwords, and writes need your approval.",
   "author": {
     "name": "markstrom"
   },
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "keywords": [
     "mcp",
-    "portal",
-    "browser",
-    "session"
-  ]
+    "mcp-server",
+    "browser-automation",
+    "playwright",
+    "customer-portal",
+    "no-code",
+    "web-automation"
+  ],
+  "homepage": "https://github.com/markstrom/portal-mcp",
+  "repository": "https://github.com/markstrom/portal-mcp"
 }

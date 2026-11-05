@@ -1,8 +1,9 @@
 # portal-mcp
 
-[![Version](https://img.shields.io/badge/version-0.9.0-blue)](https://github.com/markstrom/portal-mcp/releases)
+[![Version](https://img.shields.io/badge/version-0.9.1-blue)](https://github.com/markstrom/portal-mcp/releases)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](pyproject.toml)
 [![MCP](https://img.shields.io/badge/MCP-server-8A2BE2)](https://modelcontextprotocol.io)
+[![License](https://img.shields.io/badge/license-Apache%202.0-green)](LICENSE)
 [![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](#install)
 
 **Turn any website or customer portal into MCP tools, without an open API and without writing code.** portal-mcp is a Claude Code plugin and a local MCP server. You point it at a site, log in yourself if the site needs it, and the plugin explores the pages in a real browser, learns how they load their data, and lets you choose which tools Claude gets: list your invoices, download a PDF, look something up, fill in a form.
@@ -14,7 +15,7 @@
 - Write actions run in two steps and only after you approve them yourself, in a dialog or a local confirmation page. The model cannot approve its own actions.
 - Every write action is logged in a local audit log.
 
-**Status: version 0.9.0.** Runtime with read, file, write and binding tools and human approval; logins through other hosts, BankID and OpenID Connect apps; public sites without login; encrypted sessions and several profiles per service; a recorder that explores pages by itself and captures writes without sending them; `self_test`, desktop notifications, the `portal-mcp-creator` skill and the slash commands. Tested against a local mock service.
+**Status: version 0.9.1.** Runtime with read, file, write and binding tools and human approval; logins through other hosts, BankID and OpenID Connect apps; public sites without login; encrypted sessions and several profiles per service; a recorder that explores pages by itself and captures writes without sending them; `self_test`, desktop notifications, the `portal-mcp-creator` skill and the slash commands. Tested against a local mock service.
 
 ## Requirements
 
@@ -376,3 +377,7 @@ Logs go to stderr only.
 - Tools that send free text to other people are off unless the manifest turns them on.
 - During recording, writes are stopped in the browser and only their format is saved, unless you explicitly agree to a real action.
 - Set `PORTAL_MCP_APPROVAL=browser` to always use the confirmation page, even if the client supports elicitation.
+
+## License
+
+Apache License 2.0. See [LICENSE](LICENSE).

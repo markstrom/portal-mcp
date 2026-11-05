@@ -1,8 +1,10 @@
 [project]
 name = "portal-mcp"
-version = "0.9.0"
-description = "Run MCP tools against logged-in web portals that lack an open API."
+version = "0.9.1"
+description = "Turn websites and customer portals without an open API into MCP tools."
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
   "mcp>=1.9,<2",
